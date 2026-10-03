@@ -358,20 +358,6 @@ function AdsTab({
       adLink: form.adLink,
       adCode: form.adCode,
       starAdLink: form.starAdLink || "https://ads.ziniyaapu7.workers.dev/",
-      forceChannelJoin: Boolean(form.forceChannelJoin ?? true),
-      channelPopupDelaySec: Number(form.channelPopupDelaySec) || 39,
-      requiredChannels: form.requiredChannels || [
-        {
-          name: "Main Channel",
-          username: "jgjghjghh687",
-          url: "https://t.me/jgjghjghh687",
-        },
-        {
-          name: "Support Channel",
-          username: "Earning_Money_Lob",
-          url: "https://t.me/Earning_Money_Lob",
-        },
-      ],
     });
     setSaved(true);
     window.setTimeout(() => setSaved(false), 1500);
@@ -424,80 +410,6 @@ function AdsTab({
           onChange={(v) => updateField("starAdLink", v)}
           hint="ইউজার পোস্টে স্টার এ ক্লিক করলে এই লিংকটি ওপেন হবে এবং ১ মিনিট থেকে ৬ মিনিটের মধ্যে ভিজিট সম্পন্ন করলে পোস্টে ১টি স্টার যোগ হবে এবং পোস্টের ক্রিয়েটর ০.০১ USDT পাবেন।"
         />
-      </SectionCard>
-
-      <SectionCard title="Required Telegram Channels (বাধ্যতামূলক চ্যানেল জয়েন ও অটোমেটিক ভেরিফিকেশন)">
-        <label className="flex items-center gap-2 text-[12px] font-semibold text-white/80">
-          <input
-            type="checkbox"
-            checked={Boolean(form.forceChannelJoin ?? true)}
-            onChange={(e) => updateField("forceChannelJoin", e.target.checked)}
-            className="h-4 w-4"
-          />
-          Enable Mandatory Channel Verification (জয়েন না থাকলে ওয়েবসাইট ব্যবহার করতে দিবে না)
-        </label>
-
-        <FormInput
-          label="New User Popup Delay (Seconds)"
-          type="number"
-          value={form.channelPopupDelaySec ?? 39}
-          onChange={(v) => updateField("channelPopupDelaySec", Number(v) || 39)}
-          hint="নতুন ইউজার ওয়েবসাইটে প্রবেশের কত সেকেন্ড পর চ্যানেল জয়েন পপআপ আসবে (ডিফল্ট: ৩৯ সেকেন্ড)। পুরাতন ইউজার চ্যানেল থেকে আন-জয়েন হলে সাথে সাথে আসবে।"
-        />
-
-        <div className="mt-3 space-y-4">
-          <div className="rounded-xl border border-white/10 bg-white/5 p-3">
-            <h4 className="text-[12px] font-bold text-emerald-400">1. Main Channel (প্রধান চ্যানেল)</h4>
-            <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-2">
-              <FormInput
-                label="Channel Name"
-                value={form.requiredChannels?.[0]?.name || "Main Channel"}
-                onChange={(v) => {
-                  const updated = [...(form.requiredChannels || [])];
-                  updated[0] = { ...(updated[0] || {}), name: v };
-                  updateField("requiredChannels", updated);
-                }}
-              />
-              <FormInput
-                label="Channel URL"
-                value={form.requiredChannels?.[0]?.url || "https://t.me/jgjghjghh687"}
-                onChange={(v) => {
-                  const updated = [...(form.requiredChannels || [])];
-                  const username = v.replace(/https?:\/\/t\.me\//i, "").replace(/^@/, "").trim();
-                  updated[0] = { ...(updated[0] || {}), url: v, username };
-                  updateField("requiredChannels", updated);
-                }}
-                hint="e.g. https://t.me/jgjghjghh687"
-              />
-            </div>
-          </div>
-
-          <div className="rounded-xl border border-white/10 bg-white/5 p-3">
-            <h4 className="text-[12px] font-bold text-emerald-400">2. Support Channel (সাপোর্ট চ্যানেল)</h4>
-            <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-2">
-              <FormInput
-                label="Channel Name"
-                value={form.requiredChannels?.[1]?.name || "Support Channel"}
-                onChange={(v) => {
-                  const updated = [...(form.requiredChannels || [])];
-                  updated[1] = { ...(updated[1] || {}), name: v };
-                  updateField("requiredChannels", updated);
-                }}
-              />
-              <FormInput
-                label="Channel URL"
-                value={form.requiredChannels?.[1]?.url || "https://t.me/Earning_Money_Lob"}
-                onChange={(v) => {
-                  const updated = [...(form.requiredChannels || [])];
-                  const username = v.replace(/https?:\/\/t\.me\//i, "").replace(/^@/, "").trim();
-                  updated[1] = { ...(updated[1] || {}), url: v, username };
-                  updateField("requiredChannels", updated);
-                }}
-                hint="e.g. https://t.me/Earning_Money_Lob"
-              />
-            </div>
-          </div>
-        </div>
       </SectionCard>
 
       <SectionCard title="Telegram Bot & Services">
@@ -564,9 +476,11 @@ function ChannelsTab({
   const [testUserId, setTestUserId] = useState("");
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<string | null>(null);
+  const [toggling, setToggling] = useState(false);
+  const [toggleFeedback, setToggleFeedback] = useState<string | null>(null);
 
   useEffect(() => {
-    setEnabled(Boolean(settings.forceChannelJoin ?? true));
+    setEnabled(Boolean(settings.forceChannelJoin));
     setCh1Name(settings.requiredChannels?.[0]?.name || "Main Channel");
     setCh1Url(settings.requiredChannels?.[0]?.url || "https://t.me/jgjghjghh687");
     setCh2Name(settings.requiredChannels?.[1]?.name || "Support Channel");
@@ -583,6 +497,27 @@ function ChannelsTab({
       .split("/")[0]
       .split("?")[0]
       .trim();
+  };
+
+  const handleToggle = async () => {
+    const nextState = !enabled;
+    setEnabled(nextState);
+    setToggling(true);
+    setToggleFeedback(null);
+    try {
+      await save({ forceChannelJoin: nextState });
+      setToggleFeedback(
+        nextState
+          ? "✅ ভেরিফিকেশন সিস্টেম চালু (ON) করা হয়েছে!"
+          : "🔴 ভেরিফিকেশন সিস্টেম বন্ধ (OFF) করা হয়েছে! ইউজাররা এখন কোনো পপআপ ছাড়াই সরাসরি ব্যবহার করতে পারবে।"
+      );
+      setTimeout(() => setToggleFeedback(null), 4000);
+    } catch (err: any) {
+      setEnabled(!nextState);
+      setToggleFeedback("❌ সেভ ব্যর্থ: " + (err?.message || "Error"));
+    } finally {
+      setToggling(false);
+    }
   };
 
   const handleSave = async () => {
@@ -670,17 +605,40 @@ function ChannelsTab({
 
           <button
             type="button"
-            onClick={() => setEnabled(!enabled)}
-            className={`flex items-center justify-center gap-2 rounded-xl px-4 py-2.5 text-[12px] font-bold transition-all active:scale-95 cursor-pointer shadow-md ${
+            onClick={handleToggle}
+            disabled={toggling}
+            className={`flex items-center justify-center gap-2 rounded-xl px-4 py-2.5 text-[12px] font-bold transition-all active:scale-95 cursor-pointer shadow-md disabled:opacity-50 ${
               enabled
                 ? "bg-emerald-500 text-black shadow-emerald-500/20 hover:bg-emerald-400"
                 : "bg-red-600 text-white shadow-red-600/30 hover:bg-red-500"
             }`}
           >
-            <Power size={15} />
-            <span>{enabled ? "সিস্টেম চালু (ON)" : "সিস্টেম বন্ধ (OFF)"}</span>
+            {toggling ? (
+              <RefreshCw size={15} className="animate-spin" />
+            ) : (
+              <Power size={15} />
+            )}
+            <span>
+              {toggling
+                ? "সেভ হচ্ছে..."
+                : enabled
+                ? "সিস্টেম চালু (ON)"
+                : "সিস্টেম বন্ধ (OFF)"}
+            </span>
           </button>
         </div>
+
+        {toggleFeedback && (
+          <div
+            className={`mt-3 rounded-xl p-2.5 text-center text-[12px] font-bold shadow-md transition-all ${
+              toggleFeedback.startsWith("✅")
+                ? "border border-emerald-500/50 bg-emerald-500/20 text-emerald-300"
+                : "border border-red-500/50 bg-red-500/20 text-red-300"
+            }`}
+          >
+            {toggleFeedback}
+          </div>
+        )}
       </section>
 
       {/* Channel 1 Settings */}

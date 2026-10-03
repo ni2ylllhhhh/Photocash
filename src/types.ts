@@ -80,7 +80,7 @@ export const defaultSettings: Settings = {
   starAdLink: "https://ads.ziniyaapu7.workers.dev/",
   channelPopupDelaySec: 39,
   announcement: "",
-  forceChannelJoin: true,
+  forceChannelJoin: false,
   requiredChannels: [
     {
       name: "Main Channel",

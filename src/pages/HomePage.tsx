@@ -4,6 +4,7 @@ import { ref, query, orderByChild, limitToLast, onValue } from "firebase/databas
 import { contentDb } from "../firebase";
 import { Post } from "../types";
 import { useUser } from "../context/UserContext";
+import { useSettings } from "../context/SettingsContext";
 import { LayoutShell } from "../components/Navigation";
 import { Header } from "../components/Header";
 import { StoriesBar } from "../components/StoriesBar";
@@ -28,6 +29,7 @@ const FEED_TABS = [
 export function HomePage() {
   const navigate = useNavigate();
   const { user, referralStatusMessage, dismissReferralMessage } = useUser();
+  const { settings } = useSettings();
   const [posts, setPosts] = useState<Post[]>([]);
   const [loading, setLoading] = useState(true);
   const [currentTab, setCurrentTab] = useState("For you");
@@ -93,7 +95,7 @@ export function HomePage() {
     <LayoutShell>
       <Header onSearch={() => setSearchOpen((prev) => !prev)} />
 
-      {!user?.channelsVerified && (
+      {Boolean(settings.forceChannelJoin) && !user?.channelsVerified && (
         <div
           onClick={() => window.dispatchEvent(new CustomEvent("open-channel-modal"))}
           className="mx-3 my-2 flex cursor-pointer items-center justify-between rounded-xl border border-red-500/50 bg-gradient-to-r from-red-600 via-rose-600 to-red-600 px-3 py-2 text-white shadow-md transition active:scale-[0.99] hover:brightness-105"

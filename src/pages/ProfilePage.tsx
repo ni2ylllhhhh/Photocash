@@ -166,32 +166,34 @@ export function ProfilePage() {
           </button>
         </div>
 
-        <button
-          type="button"
-          onClick={() => window.dispatchEvent(new CustomEvent("open-channel-modal"))}
-          className="mt-2.5 flex w-full items-center justify-between rounded-2xl border border-red-500/30 bg-gradient-to-r from-red-50 to-rose-50 px-3.5 py-2.5 text-left transition active:scale-[0.99]"
-        >
-          <div className="flex items-center gap-2">
-            <span className="flex h-7 w-7 items-center justify-center rounded-full bg-red-600 text-white shadow-sm">
-              <svg width="13" height="13" viewBox="0 0 24 24" fill="white" className="-rotate-12">
-                <path d="M21.5 2.5L2 10.5L9.5 14.5L13.5 21.5L21.5 2.5Z" />
-              </svg>
-            </span>
-            <div>
-              <p className="text-[12px] font-black text-red-950">Telegram Channels (চ্যানেল ভেরিফিকেশন)</p>
-              <p className="text-[10px] text-red-700/80">ভেরিফিকেশন স্ট্যাটাস ও চ্যানেল লিংক</p>
-            </div>
-          </div>
-          <span
-            className={`rounded-full px-2.5 py-1 text-[10.5px] font-black shadow-sm ${
-              user?.channelsVerified
-                ? "bg-emerald-600 text-white"
-                : "bg-red-600 text-white animate-pulse"
-            }`}
+        {Boolean(settings.forceChannelJoin) && (
+          <button
+            type="button"
+            onClick={() => window.dispatchEvent(new CustomEvent("open-channel-modal"))}
+            className="mt-2.5 flex w-full items-center justify-between rounded-2xl border border-red-500/30 bg-gradient-to-r from-red-50 to-rose-50 px-3.5 py-2.5 text-left transition active:scale-[0.99]"
           >
-            {user?.channelsVerified ? "✓ Verified" : "ভেরিফাই করুন →"}
-          </span>
-        </button>
+            <div className="flex items-center gap-2">
+              <span className="flex h-7 w-7 items-center justify-center rounded-full bg-red-600 text-white shadow-sm">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="white" className="-rotate-12">
+                  <path d="M21.5 2.5L2 10.5L9.5 14.5L13.5 21.5L21.5 2.5Z" />
+                </svg>
+              </span>
+              <div>
+                <p className="text-[12px] font-black text-red-950">Telegram Channels (চ্যানেল ভেরিফিকেশন)</p>
+                <p className="text-[10px] text-red-700/80">ভেরিফিকেশন স্ট্যাটাস ও চ্যানেল লিংক</p>
+              </div>
+            </div>
+            <span
+              className={`rounded-full px-2.5 py-1 text-[10.5px] font-black shadow-sm ${
+                user?.channelsVerified
+                  ? "bg-emerald-600 text-white"
+                  : "bg-red-600 text-white animate-pulse"
+              }`}
+            >
+              {user?.channelsVerified ? "✓ Verified" : "ভেরিফাই করুন →"}
+            </span>
+          </button>
+        )}
 
         <div className="mt-3 grid grid-cols-3 border-b border-line">
           {(

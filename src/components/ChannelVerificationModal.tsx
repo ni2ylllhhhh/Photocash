@@ -10,7 +10,7 @@ import { CheckCircle2, Crown, RefreshCw, AlertCircle, Sparkles, ExternalLink } f
 
 export function ChannelVerificationModal() {
   const { user, updateUser } = useUser();
-  const { settings } = useSettings();
+  const { settings, loading: settingsLoading } = useSettings();
 
   const [isOpen, setIsOpen] = useState(false);
   const [joinedMap, setJoinedMap] = useState<Record<string, boolean>>({});
@@ -20,7 +20,7 @@ export function ChannelVerificationModal() {
 
   const checkingRef = useRef<boolean>(false);
   const hasInitialCheckedRef = useRef<boolean>(false);
-  const forceJoin = settings.forceChannelJoin ?? true;
+  const forceJoin = Boolean(settings.forceChannelJoin);
 
   const channels: RequiredChannel[] =
     settings.requiredChannels && settings.requiredChannels.length > 0
@@ -49,19 +49,9 @@ export function ChannelVerificationModal() {
     } catch {}
   }, []);
 
-  // Listen for open event anywhere in the app
-  useEffect(() => {
-    const handleOpen = () => {
-      setIsOpen(true);
-      runLiveCheck(true);
-    };
-    window.addEventListener("open-channel-modal", handleOpen);
-    return () => window.removeEventListener("open-channel-modal", handleOpen);
-  }, []);
-
   // Live Check with the Telegram Bot
   const runLiveCheck = useCallback(async (interactive = false) => {
-    if (!user || checkingRef.current) return;
+    if (!user || checkingRef.current || !forceJoin) return;
     checkingRef.current = true;
     setChecking(true);
     if (interactive) setStatusMessage("🤖 বট দিয়ে মেম্বারশিপ যাচাই করা হচ্ছে...");
@@ -117,10 +107,22 @@ export function ChannelVerificationModal() {
       checkingRef.current = false;
       setChecking(false);
     }
-  }, [user, channels, updateUser, settings.botToken]);
+  }, [user, channels, updateUser, settings.botToken, forceJoin]);
+
+  // Listen for open event anywhere in the app (only opens if forceJoin is enabled)
+  useEffect(() => {
+    const handleOpen = () => {
+      if (!forceJoin) return;
+      setIsOpen(true);
+      runLiveCheck(true);
+    };
+    window.addEventListener("open-channel-modal", handleOpen);
+    return () => window.removeEventListener("open-channel-modal", handleOpen);
+  }, [forceJoin, runLiveCheck]);
 
   // 1. Run live check EVERY TIME user enters the website (Mount / Initial Load)
   useEffect(() => {
+    if (settingsLoading) return;
     if (!forceJoin) {
       setIsOpen(false);
       return;
@@ -138,7 +140,7 @@ export function ChannelVerificationModal() {
       hasInitialCheckedRef.current = true;
       runLiveCheck(false);
     }
-  }, [user?.id, forceJoin, runLiveCheck]);
+  }, [user?.id, forceJoin, settingsLoading, runLiveCheck]);
 
   // 2. Periodic background verification + on focus / visibility change
   // Re-verifies every time user switches back to the tab or every 25 seconds
@@ -216,7 +218,7 @@ export function ChannelVerificationModal() {
     }
   };
 
-  if (!isOpen || !forceJoin) return null;
+  if (settingsLoading || !forceJoin || !isOpen) return null;
 
   const allChannelsJoined = channels.every((ch) => {
     const u = extractTelegramUsername(ch.username || ch.url);
