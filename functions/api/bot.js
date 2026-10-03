@@ -22,6 +22,24 @@ export async function onRequest(context) {
   try {
     const update = await request.json();
 
+    // Channel Join Request Auto-Approval
+    if (update.chat_join_request) {
+      const cjr = update.chat_join_request;
+      try {
+        await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/approveChatJoinRequest`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ chat_id: cjr.chat.id, user_id: cjr.from.id }),
+        });
+        await fetch(`${USER_DB_URL}/users/${cjr.from.id}.json`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ channelsVerified: true, channelsVerifiedAt: Date.now() }),
+        });
+      } catch {}
+      return new Response("OK");
+    }
+
     // Callback query handling (Inline [ ✅ Verify Membership ] button)
     if (update.callback_query) {
       const cb = update.callback_query;

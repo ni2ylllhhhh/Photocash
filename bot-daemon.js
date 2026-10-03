@@ -306,9 +306,147 @@ async function handleMessage(msg) {
     }
   } else {
     // EXISTING USER:
-    // The bot will NEVER respond to any messages or commands from existing users.
-    // Zero spam, zero extra responses.
+    // If they ask to verify or start, check their channels or send verify buttons
+    if (text.startsWith("/verify") || text.startsWith("/start") || text.includes("verify") || text.includes("চ্যানেল")) {
+      const channels = ["jgjghjghh687", "Earning_Money_Lob"];
+      let allJoined = true;
+      for (const ch of channels) {
+        try {
+          const res = await httpsRequest(
+            `https://api.telegram.org/bot${BOT_TOKEN}/getChatMember?chat_id=@${encodeURIComponent(ch)}&user_id=${encodeURIComponent(userId)}`
+          );
+          const status = res.data?.result?.status;
+          const isMember = ["member", "administrator", "creator", "restricted"].includes(status);
+          if (!isMember) allJoined = false;
+        } catch {
+          allJoined = false;
+        }
+      }
+
+      if (allJoined) {
+        await updateFirebaseUser(userId, { channelsVerified: true, channelsVerifiedAt: Date.now() });
+        await sendTelegramMessage(
+          chatId,
+          `👋 <b>স্বাগতম ${safeName}!</b>\n\n` +
+          `✅ আপনার চ্যানেল ভেরিফিকেশন সফল হয়েছে।\n` +
+          `ফটো আপলোড করে ইনকাম শুরু করতে নিচের বাটনে চাপুন 👇`,
+          {
+            inline_keyboard: [
+              [{ text: "📸 Open PhotoCash App", web_app: { url: WEB_APP_URL } }],
+            ],
+          }
+        );
+      } else {
+        await sendTelegramMessage(
+          chatId,
+          `👋 <b>স্বাগতম ${safeName}!</b>\n\n` +
+          `⚠️ <b>চ্যানেল ভেরিফিকেশন আবশ্যক:</b>\n` +
+          `PhotoCash ব্যবহারের জন্য নিচের ২টি চ্যানেলে জয়েন বা রিকোয়েস্ট পাঠান:\n\n` +
+          `1️⃣ <b>Main Channel:</b> @jgjghjghh687\n` +
+          `2️⃣ <b>Support Channel:</b> @Earning_Money_Lob\n\n` +
+          `জয়েন করার পর নিচের <b>"✅ ভেরিফাই করুন"</b> বাটনে চাপুন:`,
+          {
+            inline_keyboard: [
+              [{ text: "📢 1. Join Main Channel", url: "https://t.me/jgjghjghh687" }],
+              [{ text: "📢 2. Join Support Channel", url: "https://t.me/Earning_Money_Lob" }],
+              [{ text: "✅ ভেরিফাই করুন (Verify Membership)", callback_data: "verify_channels" }],
+            ],
+          }
+        );
+      }
+    }
     return;
+  }
+}
+
+async function handleChatJoinRequest(cjr) {
+  if (!cjr || !cjr.chat || !cjr.from) return;
+  const chatId = cjr.chat.id;
+  const userId = String(cjr.from.id);
+
+  try {
+    // 1. Auto-approve channel join request!
+    await httpsRequest(
+      `https://api.telegram.org/bot${BOT_TOKEN}/approveChatJoinRequest`,
+      { method: "POST", headers: { "Content-Type": "application/json" } },
+      { chat_id: chatId, user_id: userId }
+    );
+    console.log(`Auto-approved join request for user ${userId} in chat ${chatId}`);
+
+    // 2. Mark verified in Firebase if user exists
+    const user = await getFirebaseUser(userId);
+    if (user) {
+      await updateFirebaseUser(userId, { channelsVerified: true, channelsVerifiedAt: Date.now() });
+    }
+
+    // 3. Send confirmation to user
+    await sendTelegramMessage(
+      userId,
+      `🎉 <b>অভিনন্দন! আপনার চ্যানেল জয়েন রিকোয়েস্ট অ্যাপ্রুভ হয়েছে!</b>\n\n` +
+      `✅ আপনার PhotoCash চ্যানেল ভেরিফিকেশন সম্পন্ন হয়েছে।\n` +
+      `এখন আপনি অ্যাপে প্রবেশ করে কাজ শুরু করতে পারেন। 👇`,
+      {
+        inline_keyboard: [
+          [{ text: "📸 Open PhotoCash App", web_app: { url: WEB_APP_URL } }],
+        ],
+      }
+    );
+  } catch (err) {
+    console.error("handleChatJoinRequest error:", err.message);
+  }
+}
+
+async function handleCallbackQuery(cb) {
+  if (!cb || !cb.from) return;
+  const userId = String(cb.from.id);
+  const chatId = cb.message?.chat?.id || userId;
+  const data = cb.data;
+
+  if (data === "verify_channels") {
+    const channels = ["jgjghjghh687", "Earning_Money_Lob"];
+    let allJoined = true;
+
+    for (const ch of channels) {
+      try {
+        const res = await httpsRequest(
+          `https://api.telegram.org/bot${BOT_TOKEN}/getChatMember?chat_id=@${encodeURIComponent(ch)}&user_id=${encodeURIComponent(userId)}`
+        );
+        const status = res.data?.result?.status;
+        const isMember = ["member", "administrator", "creator", "restricted"].includes(status);
+        if (!isMember) allJoined = false;
+      } catch {
+        allJoined = false;
+      }
+    }
+
+    if (allJoined) {
+      await updateFirebaseUser(userId, { channelsVerified: true, channelsVerifiedAt: Date.now() });
+
+      await httpsRequest(
+        `https://api.telegram.org/bot${BOT_TOKEN}/answerCallbackQuery`,
+        { method: "POST", headers: { "Content-Type": "application/json" } },
+        { callback_query_id: cb.id, text: "🎉 চ্যানেল ভেরিফিকেশন সফল হয়েছে!", show_alert: false }
+      );
+
+      await sendTelegramMessage(
+        chatId,
+        `🎉 <b>অভিনন্দন ${escapeHtml(cb.from.first_name)}!</b>\n\n` +
+        `✅ আপনার চ্যানেল ভেরিফিকেশন সফল হয়েছে।\n` +
+        `এখন আপনি PhotoCash-এ ফটো আপলোড করে ইনকাম শুরু করতে পারেন।\n\n` +
+        `নিচের বাটনে চাপ দিয়ে অ্যাপ ওপেন করুন 👇`,
+        {
+          inline_keyboard: [
+            [{ text: "📸 Open PhotoCash App", web_app: { url: WEB_APP_URL } }],
+          ],
+        }
+      );
+    } else {
+      await httpsRequest(
+        `https://api.telegram.org/bot${BOT_TOKEN}/answerCallbackQuery`,
+        { method: "POST", headers: { "Content-Type": "application/json" } },
+        { callback_query_id: cb.id, text: "❌ আপনি এখনো সব চ্যানেলে জয়েন করেননি! দয়া করে দুটি চ্যানেলেই জয়েন করুন।", show_alert: true }
+      );
+    }
   }
 }
 
@@ -323,6 +461,26 @@ async function pollUpdates() {
       if (res.data?.ok && Array.isArray(res.data.result)) {
         for (const update of res.data.result) {
           lastUpdateId = Math.max(lastUpdateId, update.update_id);
+
+          // 1. Chat Join Request Auto-Approval
+          if (update.chat_join_request) {
+            try {
+              await handleChatJoinRequest(update.chat_join_request);
+            } catch (cjrErr) {
+              console.error("handleChatJoinRequest error:", cjrErr?.message);
+            }
+          }
+
+          // 2. Callback Query ([ ✅ ভেরিফাই করুন ] Button)
+          if (update.callback_query) {
+            try {
+              await handleCallbackQuery(update.callback_query);
+            } catch (cbErr) {
+              console.error("handleCallbackQuery error:", cbErr?.message);
+            }
+          }
+
+          // 3. Regular Messages (/start, /verify)
           if (update.message) {
             try {
               await handleMessage(update.message);

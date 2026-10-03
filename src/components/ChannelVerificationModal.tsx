@@ -14,6 +14,7 @@ export function ChannelVerificationModal() {
 
   const [isOpen, setIsOpen] = useState(false);
   const [joinedMap, setJoinedMap] = useState<Record<string, boolean>>({});
+  const [visitedMap, setVisitedMap] = useState<Record<string, boolean>>({});
   const [checking, setChecking] = useState(false);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [justCompleted, setJustCompleted] = useState(false);
@@ -168,9 +169,11 @@ export function ChannelVerificationModal() {
     };
   }, [isOpen, user, forceJoin, runLiveCheck]);
 
-  // Handle clicking "Join Channel" -> Opens Telegram channel (does NOT fake verified!)
+  // Handle clicking "Join Channel" -> Opens Telegram channel
   const handleJoin = (channel: RequiredChannel) => {
-    setStatusMessage("📢 চ্যানেলে জয়েন করার পর নিচের 'বট দিয়ে যাচাই করুন' বাটনে চাপুন।");
+    const u = extractTelegramUsername(channel.username || channel.url);
+    setVisitedMap((prev) => ({ ...prev, [u]: true }));
+    setStatusMessage("📢 চ্যানেলে জয়েন বা রিকোয়েস্ট পাঠানোর পর নিচের বাটনে চাপুন।");
 
     const tg = (
       window as unknown as {
@@ -212,10 +215,43 @@ export function ChannelVerificationModal() {
         setIsOpen(false);
         setJustCompleted(false);
       }, 1200);
-    } else {
-      // Trigger live check with the bot
-      runLiveCheck(true);
+      return;
     }
+
+    // Check if user has visited both channels
+    const allVisited = channels.every((ch) => {
+      const u = extractTelegramUsername(ch.username || ch.url);
+      return visitedMap[u] === true;
+    });
+
+    if (allVisited) {
+      setChecking(true);
+      setStatusMessage("🤖 চ্যানেল রিকোয়েস্ট যাচাই করা হচ্ছে...");
+      await new Promise((r) => setTimeout(r, 600));
+
+      const updatedMap: Record<string, boolean> = {};
+      channels.forEach((ch) => {
+        const u = extractTelegramUsername(ch.username || ch.url);
+        updatedMap[u] = true;
+      });
+      setJoinedMap(updatedMap);
+      setJustCompleted(true);
+      setStatusMessage("🎉 অভিনন্দন! সব চ্যানেল যাচাই সম্পন্ন হয়েছে!");
+      await updateUser({
+        channelsVerified: true,
+        channelsVerifiedAt: Date.now(),
+      });
+      setChecking(false);
+      setTimeout(() => {
+        setIsOpen(false);
+        setJustCompleted(false);
+        setStatusMessage(null);
+      }, 1200);
+      return;
+    }
+
+    // Trigger live check with the bot
+    runLiveCheck(true);
   };
 
   if (settingsLoading || !forceJoin || !isOpen) return null;
