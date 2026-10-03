@@ -3,7 +3,7 @@ import { ref, onValue, update, remove, runTransaction } from "firebase/database"
 import { contentDb, userDb } from "../firebase";
 import { Settings, User, Post, Withdrawal, defaultSettings } from "../types";
 import { useSettings } from "../context/SettingsContext";
-import { formatUSDT, formatTimeAgo } from "../utils";
+import { formatUSDT, formatTimeAgo, sendTelegramBotMessage } from "../utils";
 import {
   Lock,
   LogOut,
@@ -21,6 +21,9 @@ import {
   XCircle,
   RefreshCw,
   Power,
+  Phone,
+  Copy,
+  Check,
 } from "lucide-react";
 
 const SESSION_KEY = "pc_panel_session";
@@ -153,7 +156,9 @@ export function AdminPanelPage() {
         )}
         {activeTab === "users" && <UsersTab />}
         {activeTab === "posts" && <PostsTab />}
-        {activeTab === "withdrawals" && <WithdrawalsTab />}
+        {activeTab === "withdrawals" && (
+          <WithdrawalsTab settings={settings} save={saveSettings} />
+        )}
       </div>
     </div>
   );
@@ -941,8 +946,22 @@ function PostsTab() {
   );
 }
 
-function WithdrawalsTab() {
+function WithdrawalsTab({
+  settings,
+  save,
+}: {
+  settings: Settings;
+  save: (s: Partial<Settings>) => Promise<void>;
+}) {
   const [withdrawals, setWithdrawals] = useState<Withdrawal[]>([]);
+  const [adminChatId, setAdminChatId] = useState(settings.adminChatId || "");
+  const [savingChatId, setSavingChatId] = useState(false);
+  const [chatIdMsg, setChatIdMsg] = useState<string | null>(null);
+  const [copiedAccount, setCopiedAccount] = useState<string | null>(null);
+
+  useEffect(() => {
+    setAdminChatId(settings.adminChatId || "");
+  }, [settings.adminChatId]);
 
   useEffect(() => {
     const wRef = ref(userDb, "withdrawals");
@@ -955,6 +974,20 @@ function WithdrawalsTab() {
     return () => unsubscribe();
   }, []);
 
+  const handleSaveAdminChatId = async () => {
+    setSavingChatId(true);
+    setChatIdMsg(null);
+    try {
+      await save({ adminChatId: adminChatId.trim() });
+      setChatIdMsg("✅ অ্যাডমিন নোটিফিকেশন চ্যাট আইডি সেভ হয়েছে!");
+      setTimeout(() => setChatIdMsg(null), 3500);
+    } catch (err: any) {
+      setChatIdMsg("❌ সেভ ব্যর্থ: " + err.message);
+    } finally {
+      setSavingChatId(false);
+    }
+  };
+
   const setStatus = async (item: Withdrawal, status: "approved" | "rejected") => {
     await update(ref(userDb, `withdrawals/${item.id}`), { status });
     if (status === "rejected") {
@@ -966,6 +999,37 @@ function WithdrawalsTab() {
         };
       });
     }
+
+    // Send Telegram Notification to the User via Bot
+    const botToken = settings.botToken || "8738784866:AAFk8eHwv2xuswJTCBxGcvKAwZuUJHq4bK0";
+    try {
+      if (status === "approved") {
+        const msg =
+          `🎉 <b>অভিনন্দন! আপনার উইথড্র সফল হয়েছে!</b>\n\n` +
+          `💵 <b>পরিমাণ:</b> $${item.amount.toFixed(2)} USDT\n` +
+          `💳 <b>পেমেন্ট মেথড:</b> ${item.method}\n` +
+          `📞 <b>একাউন্ট / নাম্বার:</b> <code>${item.account}</code>\n` +
+          `✅ <b>স্ট্যাটাস:</b> পেইড / অ্যাপ্রুভড (Paid)\n\n` +
+          `আপনার একাউন্টে টাকা সফলভাবে পাঠানো হয়েছে। PhotoCash-এ কাজ করার জন্য ধন্যবাদ! 📸💸`;
+        await sendTelegramBotMessage(botToken, item.uid, msg);
+      } else {
+        const msg =
+          `⚠️ <b>আপনার উইথড্র রিকোয়েস্ট বাতিল করা হয়েছে</b>\n\n` +
+          `💵 <b>পরিমাণ:</b> $${item.amount.toFixed(2)} USDT (${item.method})\n` +
+          `📞 <b>একাউন্ট:</b> <code>${item.account}</code>\n` +
+          `❌ <b>স্ট্যাটাস:</b> রিজেক্টেড (Rejected)\n\n` +
+          `উইথড্র করার $${item.amount.toFixed(2)} USDT আপনার PhotoCash একাউন্টে রিফান্ড করা হয়েছে। সঠিক ফোন নাম্বার বা একাউন্ট দিয়ে পুনরায় চেষ্টা করুন।`;
+        await sendTelegramBotMessage(botToken, item.uid, msg);
+      }
+    } catch (err) {
+      console.error("Telegram notification error:", err);
+    }
+  };
+
+  const copyNumber = (text: string, id: string) => {
+    navigator.clipboard?.writeText(text);
+    setCopiedAccount(id);
+    setTimeout(() => setCopiedAccount(null), 1500);
   };
 
   const statusBadge = (s: string) => {
@@ -975,39 +1039,152 @@ function WithdrawalsTab() {
   };
 
   return (
-    <ul className="space-y-2 pb-6">
-      <p className="text-[11px] text-white/40">
-        {withdrawals.filter((w) => w.status === "pending").length} pending • {withdrawals.length} total
-      </p>
-      {withdrawals.map((w) => (
-        <li key={w.id} className="rounded-xl bg-white/5 p-3">
-          <div className="flex items-center justify-between">
-            <p className="text-[14px] font-extrabold">{formatUSDT(w.amount, 2)}</p>
-            <span className={`rounded-full px-2 py-0.5 text-[10px] font-bold ${statusBadge(w.status)}`}>
-              {w.status}
-            </span>
-          </div>
-          <p className="text-[11px] text-white/60">
-            {w.name} (@{w.username}) • ID {w.uid}
-          </p>
-          <p className="break-all text-[11px] text-white/40">
-            {w.method} • {w.account}
-          </p>
-          <p className="text-[10px] text-white/30">{formatTimeAgo(w.createdAt)}</p>
+    <div className="space-y-4 pb-8">
+      {/* Admin Telegram Notification Config */}
+      <section className="rounded-2xl border border-white/10 bg-[#171a21] p-4 shadow-lg">
+        <div className="flex items-center gap-2">
+          <Send size={16} className="text-emerald-400" />
+          <h2 className="text-[13px] font-bold text-white">
+            অ্যাডমিন টেলিগ্রাম নোটিফিকেশন (Withdrawal Alert)
+          </h2>
+        </div>
+        <p className="mt-1 text-[11px] text-white/60">
+          যেকোনো ইউজার ক্যাশআউট রিকোয়েস্ট দিলে স্বয়ংক্রিয়ভাবে আপনার টেলিগ্রামে মেসেজ ও ইউজারের ফোন নাম্বার চলে আসবে।
+        </p>
 
-          {w.status === "pending" && (
-            <div className="mt-2 flex gap-2">
-              <ActionPill onClick={() => setStatus(w, "approved")}>
-                Approve (paid)
-              </ActionPill>
-              <ActionPill danger onClick={() => setStatus(w, "rejected")}>
-                Reject & refund
-              </ActionPill>
-            </div>
-          )}
-        </li>
-      ))}
-    </ul>
+        <div className="mt-3 flex flex-col gap-2 sm:flex-row">
+          <input
+            type="text"
+            value={adminChatId}
+            onChange={(e) => setAdminChatId(e.target.value)}
+            placeholder="আপনার টেলিগ্রাম চ্যাট আইডি বা চ্যানেল আইডি (যেমন: 8235864550)"
+            className="flex-1 rounded-xl bg-black/40 px-3.5 py-2.5 text-[12px] text-white outline-none ring-1 ring-white/10 focus:ring-emerald-400"
+          />
+          <button
+            type="button"
+            onClick={handleSaveAdminChatId}
+            disabled={savingChatId}
+            className="flex items-center justify-center gap-1.5 rounded-xl bg-emerald-500 px-4 py-2.5 text-[12px] font-bold text-black transition active:scale-95 hover:bg-emerald-400 disabled:opacity-50"
+          >
+            {savingChatId ? <RefreshCw size={14} className="animate-spin" /> : <Check size={14} />}
+            <span>সেভ করুন</span>
+          </button>
+        </div>
+
+        {chatIdMsg && (
+          <p
+            className={`mt-2 text-[11.5px] font-bold ${
+              chatIdMsg.startsWith("✅") ? "text-emerald-400" : "text-red-400"
+            }`}
+          >
+            {chatIdMsg}
+          </p>
+        )}
+      </section>
+
+      {/* Withdrawals List */}
+      <div>
+        <p className="mb-2 text-[11px] text-white/40">
+          {withdrawals.filter((w) => w.status === "pending").length} pending • {withdrawals.length} total
+        </p>
+
+        <ul className="space-y-2.5">
+          {withdrawals.map((w) => {
+            const isPhone = /^(01|\+8801)\d{9}/.test(w.account.trim());
+
+            return (
+              <li key={w.id} className="rounded-2xl border border-white/10 bg-white/5 p-3.5 shadow-sm">
+                <div className="flex items-center justify-between">
+                  <p className="text-[15px] font-extrabold text-white">
+                    {formatUSDT(w.amount, 2)}
+                    <span className="ml-1.5 text-[11px] font-normal text-white/40">
+                      (≈ {(w.amount * 125).toFixed(0)} BDT)
+                    </span>
+                  </p>
+                  <span className={`rounded-full px-2.5 py-0.5 text-[10px] font-black uppercase tracking-wider ${statusBadge(w.status)}`}>
+                    {w.status}
+                  </span>
+                </div>
+
+                <div className="mt-2 flex items-center justify-between text-[11.5px]">
+                  <p className="text-white/80">
+                    <span className="font-bold text-white">{w.name}</span>{" "}
+                    {w.username && (
+                      <a
+                        href={`https://t.me/${w.username}`}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="text-emerald-400 hover:underline"
+                      >
+                        (@{w.username})
+                      </a>
+                    )}{" "}
+                    • ID: <span className="font-mono text-white/60">{w.uid}</span>
+                  </p>
+                  <span className="text-[10px] text-white/40">{formatTimeAgo(w.createdAt)}</span>
+                </div>
+
+                {/* Account & Phone Section */}
+                <div className="mt-2.5 flex flex-wrap items-center justify-between gap-2 rounded-xl bg-black/40 px-3 py-2 text-[12px]">
+                  <div className="flex items-center gap-1.5">
+                    <span className="font-bold text-amber-400">{w.method}:</span>
+                    <span className="font-mono font-extrabold text-white">{w.account}</span>
+                  </div>
+
+                  <div className="flex items-center gap-1.5">
+                    {isPhone && (
+                      <a
+                        href={`tel:${w.account.trim()}`}
+                        className="flex items-center gap-1 rounded-lg bg-emerald-500/20 px-2.5 py-1 text-[11px] font-bold text-emerald-400 transition hover:bg-emerald-500/30 active:scale-95"
+                      >
+                        <Phone size={12} />
+                        <span>ফোন করুন</span>
+                      </a>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => copyNumber(w.account.trim(), w.id)}
+                      className="flex items-center gap-1 rounded-lg bg-white/10 px-2.5 py-1 text-[11px] font-semibold text-white/80 transition hover:bg-white/20 active:scale-95"
+                    >
+                      {copiedAccount === w.id ? (
+                        <>
+                          <Check size={12} className="text-emerald-400" />
+                          <span className="text-emerald-400">কপি হয়েছে</span>
+                        </>
+                      ) : (
+                        <>
+                          <Copy size={12} />
+                          <span>কপি</span>
+                        </>
+                      )}
+                    </button>
+                  </div>
+                </div>
+
+                {w.status === "pending" && (
+                  <div className="mt-3 flex gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setStatus(w, "approved")}
+                      className="flex-1 rounded-xl bg-emerald-500 py-2 text-center text-[12px] font-bold text-black shadow-md transition hover:bg-emerald-400 active:scale-95"
+                    >
+                      ✓ Approve (টাকা পাঠানো হয়েছে)
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setStatus(w, "rejected")}
+                      className="rounded-xl border border-red-500/40 bg-red-500/10 px-3 py-2 text-[12px] font-bold text-red-400 transition hover:bg-red-500/20 active:scale-95"
+                    >
+                      ✕ Reject & Refund
+                    </button>
+                  </div>
+                )}
+              </li>
+            );
+          })}
+        </ul>
+      </div>
+    </div>
   );
 }
 

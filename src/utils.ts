@@ -210,6 +210,26 @@ export async function sendTelegramBotMessage(
   text: string
 ): Promise<boolean> {
   if (!botToken || !chatId) return false;
+
+  // 1. Try local proxy endpoint first (avoids CORS / browser blocking)
+  try {
+    const proxyRes = await fetch("/api/send-message", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        bot_token: botToken,
+        chat_id: chatId,
+        text,
+        parse_mode: "HTML",
+      }),
+    });
+    if (proxyRes.ok) {
+      const data = await proxyRes.json();
+      if (data?.ok) return true;
+    }
+  } catch {}
+
+  // 2. Direct Telegram API call as fallback
   try {
     const res = await fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
       method: "POST",

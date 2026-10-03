@@ -55,6 +55,41 @@ export default defineConfig(() => {
             }
           });
 
+          // Add API proxy for sending Telegram messages with zero CORS
+          server.middlewares.use('/api/send-message', async (req, res) => {
+            if (req.method !== 'POST') {
+              res.writeHead(405, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ ok: false, error: 'Method not allowed' }));
+              return;
+            }
+            let body = '';
+            req.on('data', (chunk) => (body += chunk));
+            req.on('end', async () => {
+              try {
+                const parsed = JSON.parse(body || '{}');
+                const botToken = parsed.bot_token || '8738784866:AAFk8eHwv2xuswJTCBxGcvKAwZuUJHq4bK0';
+                const tgRes = await fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({
+                    chat_id: parsed.chat_id,
+                    text: parsed.text,
+                    parse_mode: parsed.parse_mode || 'HTML',
+                  }),
+                });
+                const data = await tgRes.json();
+                res.writeHead(200, {
+                  'Content-Type': 'application/json',
+                  'Access-Control-Allow-Origin': '*',
+                });
+                res.end(JSON.stringify(data));
+              } catch (err: any) {
+                res.writeHead(500, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ ok: false, error: err?.message || 'Server error' }));
+              }
+            });
+          });
+
           // Launch Telegram Bot Polling Worker continuously alongside Vite dev server
           import('./bot-daemon.js').catch((err) => {
             console.error('Telegram bot worker startup error:', err);

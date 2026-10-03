@@ -34,6 +34,7 @@ export interface Settings {
   forceChannelJoin?: boolean;
   requiredChannels?: RequiredChannel[];
   webAppUrl?: string;
+  adminChatId?: string;
 }
 
 export const DEFAULT_AD_CODE = `<script>
@@ -94,6 +95,7 @@ export const defaultSettings: Settings = {
     },
   ],
   webAppUrl: "https://photocash.ziniyaapu7.workers.dev/",
+  adminChatId: "",
 };
 
 export const APP_LOGO_URL = "https://i.ibb.co.com/cS6GZXp9/IMG-20260929-215654-333.jpg";

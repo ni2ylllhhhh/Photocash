@@ -5,7 +5,7 @@ import { userDb } from "../firebase";
 import { useUser } from "../context/UserContext";
 import { useSettings } from "../context/SettingsContext";
 import { LayoutShell } from "../components/Navigation";
-import { formatUSDT } from "../utils";
+import { formatUSDT, sendTelegramBotMessage, escapeHtml } from "../utils";
 import { ArrowLeft, Check, Info, ArrowUpRight } from "lucide-react";
 import { User, BKASH_LOGO_URL, NAGAD_LOGO_URL, BINANCE_LOGO_URL } from "../types";
 
@@ -180,6 +180,39 @@ export function CashOutPage() {
       };
     });
 
+    // Send Telegram Notification to the user and Admin
+    try {
+      const botToken = settings.botToken || "8738784866:AAFk8eHwv2xuswJTCBxGcvKAwZuUJHq4bK0";
+
+      // 1. Send confirmation message to user's Telegram
+      const userMsg =
+        `💸 <b>PhotoCash উইথড্র রিকোয়েস্ট সফল হয়েছে!</b>\n\n` +
+        `👤 <b>নাম:</b> ${escapeHtml(user.name)}\n` +
+        `💵 <b>উইথড্র পরিমাণ:</b> $${selectedAmount.toFixed(2)} USDT\n` +
+        `💳 <b>পেমেন্ট মেথড:</b> ${methodTitle}\n` +
+        `📞 <b>ফোন / একাউন্ট নাম্বার:</b> <code>${accountNumber.trim()}</code>\n` +
+        `⏳ <b>স্ট্যাটাস:</b> পেন্ডিং (Pending)\n\n` +
+        `✅ আপনার ক্যাশআউট রিকোয়েস্ট অ্যাডমিনের কাছে পৌঁছেছে। অ্যাডমিন খুব শীঘ্রই ভেরিফাই করে পেমেন্ট পাঠিয়ে দিবে অথবা প্রয়োজন হলে আপনার নাম্বারে যোগাযোগ / ফোন করবে। 📞`;
+
+      await sendTelegramBotMessage(botToken, user.id, userMsg);
+
+      // 2. Send alert message to Admin Telegram ID / Channel if configured
+      if (settings.adminChatId?.trim()) {
+        const adminMsg =
+          `🚨 <b>নতুন ক্যাশআউট রিকোয়েস্ট!</b>\n\n` +
+          `👤 <b>ইউজার:</b> ${escapeHtml(user.name)} (@${user.username || "none"})\n` +
+          `🆔 <b>টেলিগ্রাম আইডি:</b> <code>${user.id}</code>\n` +
+          `💵 <b>পরিমাণ:</b> $${selectedAmount.toFixed(2)} USDT\n` +
+          `💳 <b>মেথড:</b> ${methodTitle}\n` +
+          `📞 <b>ফোন / একাউন্ট:</b> <code>${accountNumber.trim()}</code>\n` +
+          `🕒 <b>সময়:</b> ${new Date().toLocaleString("en-US", { timeZone: "Asia/Dhaka" })}\n\n` +
+          `👉 অ্যাডমিন প্যানেল থেকে রিকোয়েস্ট অ্যাপ্রুভ করুন অথবা নাম্বারে কল করুন।`;
+        await sendTelegramBotMessage(botToken, settings.adminChatId.trim(), adminMsg);
+      }
+    } catch (msgErr) {
+      console.error("Failed to send withdrawal Telegram message:", msgErr);
+    }
+
     setSubmitting(false);
     setSubmitted(true);
   };
@@ -204,18 +237,21 @@ export function CashOutPage() {
       </header>
 
       {submitted ? (
-        <section className="rounded-2xl bg-white p-6 text-center">
-          <span className="mx-auto flex h-12 w-12 items-center justify-center rounded-full bg-green-100 text-green-600">
-            <Check size={22} />
+        <section className="rounded-2xl bg-white p-6 text-center shadow-sm">
+          <span className="mx-auto flex h-12 w-12 items-center justify-center rounded-full bg-emerald-100 text-emerald-600">
+            <Check size={24} />
           </span>
-          <h2 className="mt-2 text-[15px] font-bold text-ink">Request submitted</h2>
-          <p className="mt-1 text-[12px] leading-snug text-muted">
-            {formatUSDT(selectedAmount, 2)} USDT withdraw সফলভাবে পাঠানো হয়েছে। {currentMethodObj.name} একাউন্টে ({accountNumber}) প্রসেস করা হবে।
+          <h2 className="mt-2 text-[15px] font-bold text-ink">উইথড্র রিকোয়েস্ট সফল হয়েছে!</h2>
+          <p className="mt-2 text-[12px] leading-relaxed text-muted">
+            {formatUSDT(selectedAmount, 2)} USDT উইথড্র সফলভাবে গ্রহণ করা হয়েছে। {currentMethodObj.name} একাউন্টে ({accountNumber}) টাকা পাঠানো হবে।
           </p>
+          <div className="mt-2.5 rounded-xl border border-emerald-500/20 bg-emerald-50 p-2.5 text-[11.5px] text-emerald-900 leading-snug">
+            📲 আপনার টেলিগ্রামে রিকোয়েস্ট মেসেজ পাঠানো হয়েছে। অ্যাডমিন খুব শীঘ্রই ভেরিফাই করে পেমেন্ট করবে অথবা আপনার নাম্বারে ফোন করবে। 📞
+          </div>
           <button
             type="button"
             onClick={() => navigate("/wallet")}
-            className="brand-grad mt-3 rounded-full px-5 py-2 text-[13px] font-bold text-white"
+            className="brand-grad mt-4 w-full rounded-full px-5 py-2.5 text-[13px] font-bold text-white shadow"
           >
             Back to wallet
           </button>
