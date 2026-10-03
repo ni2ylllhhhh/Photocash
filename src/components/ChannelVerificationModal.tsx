@@ -186,7 +186,10 @@ export function ChannelVerificationModal() {
     } else if (tg?.WebApp?.openLink) {
       tg.WebApp.openLink(channel.url);
     } else {
-      window.open(channel.url, "_blank", "noopener,noreferrer");
+      const win = window.open(channel.url, "_blank", "noopener,noreferrer");
+      if (!win) {
+        window.location.href = channel.url;
+      }
     }
   };
 
@@ -339,16 +342,20 @@ export function ChannelVerificationModal() {
               return (
                 <div
                   key={ch.url}
-                  className={`relative flex flex-col justify-between rounded-xl border bg-[#120f18] p-2 transition-all duration-300 ${
+                  role="button"
+                  tabIndex={0}
+                  onClick={() => handleJoin(ch)}
+                  className={`group relative flex flex-col justify-between rounded-xl border bg-[#120f18] p-2 transition-all duration-200 cursor-pointer active:scale-95 select-none ${
                     isJoined
-                      ? "border-emerald-500 shadow-[0_0_12px_rgba(16,185,129,0.45)]"
-                      : "border-[#e11d48]/80 shadow-[0_0_10px_rgba(225,29,72,0.3)]"
+                      ? "border-emerald-500 shadow-[0_0_12px_rgba(16,185,129,0.45)] hover:border-emerald-400"
+                      : "border-[#e11d48]/80 shadow-[0_0_10px_rgba(225,29,72,0.3)] hover:border-red-400 hover:shadow-[0_0_15px_rgba(255,40,70,0.5)]"
                   }`}
+                  title={`Click to open ${ch.name}`}
                 >
                   <div>
                     {/* Top Row: Circular Red Telegram Orb + Title */}
                     <div className="flex items-center gap-1.5">
-                      <div className="relative flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-gradient-to-tr from-[#7f1d1d] via-[#dc2626] to-[#f87171] border border-red-300/40 shadow-[0_2px_5px_rgba(220,38,38,0.7)]">
+                      <div className="relative flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-gradient-to-tr from-[#7f1d1d] via-[#dc2626] to-[#f87171] border border-red-300/40 shadow-[0_2px_5px_rgba(220,38,38,0.7)] group-hover:scale-105 transition-transform">
                         <svg
                           width="11"
                           height="11"
@@ -361,7 +368,7 @@ export function ChannelVerificationModal() {
                       </div>
 
                       <div className="min-w-0">
-                        <h3 className="text-[11px] font-black text-white leading-tight">
+                        <h3 className="text-[11px] font-black text-white leading-tight group-hover:text-red-200 transition-colors">
                           {titleMain}{" "}
                           <span className="text-[#ff3b4b]">{titleSec}</span>
                         </h3>
@@ -376,20 +383,16 @@ export function ChannelVerificationModal() {
                   {/* Channel Status and Join/Verified Pill Button */}
                   <div className="mt-2 space-y-1">
                     {isJoined ? (
-                      <div className="flex w-full items-center justify-center gap-1 rounded-full bg-gradient-to-r from-emerald-600 to-teal-600 py-1 text-[9.5px] font-black text-white shadow-[0_0_8px_rgba(16,185,129,0.7)] cursor-default">
+                      <div className="flex w-full items-center justify-center gap-1 rounded-full bg-gradient-to-r from-emerald-600 to-teal-600 py-1 text-[9.5px] font-black text-white shadow-[0_0_8px_rgba(16,185,129,0.7)]">
                         <CheckCircle2 size={11} />
                         <span>✓ Verified</span>
                       </div>
                     ) : (
-                      <button
-                        type="button"
-                        onClick={() => handleJoin(ch)}
-                        className="flex w-full items-center justify-center gap-1 rounded-full bg-gradient-to-b from-[#ff3b4b] via-[#dc2626] to-[#991b1b] border border-red-300/40 py-1 text-[9.5px] font-black text-white shadow-[0_2px_8px_rgba(220,38,38,0.8)] transition active:scale-95 hover:brightness-115 cursor-pointer"
-                      >
+                      <div className="flex w-full items-center justify-center gap-1 rounded-full bg-gradient-to-b from-[#ff3b4b] via-[#dc2626] to-[#991b1b] border border-red-300/40 py-1 text-[9.5px] font-black text-white shadow-[0_2px_8px_rgba(220,38,38,0.8)] group-hover:brightness-115 transition">
                         <ExternalLink size={10} />
                         <span>Join Channel</span>
                         <span>→</span>
-                      </button>
+                      </div>
                     )}
                   </div>
                 </div>
