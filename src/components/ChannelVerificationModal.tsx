@@ -19,6 +19,7 @@ export function ChannelVerificationModal() {
   const [justCompleted, setJustCompleted] = useState(false);
 
   const checkingRef = useRef<boolean>(false);
+  const hasInitialCheckedRef = useRef<boolean>(false);
   const forceJoin = settings.forceChannelJoin ?? true;
 
   const channels: RequiredChannel[] =
@@ -82,17 +83,22 @@ export function ChannelVerificationModal() {
       if (allJoined) {
         setStatusMessage("🎉 অভিনন্দন! সব চ্যানেল যাচাই সম্পন্ন হয়েছে!");
         setJustCompleted(true);
-        await updateUser({
-          channelsVerified: true,
-          channelsVerifiedAt: Date.now(),
-        });
+        if (!user.channelsVerified) {
+          await updateUser({
+            channelsVerified: true,
+            channelsVerifiedAt: Date.now(),
+          });
+        }
 
         setTimeout(() => {
           setIsOpen(false);
           setJustCompleted(false);
           setStatusMessage(null);
-        }, 1500);
+        }, 1300);
       } else {
+        // User is missing one or more channels!
+        // Immediately lock the website and set channelsVerified: false
+        setIsOpen(true);
         if (user.channelsVerified) {
           await updateUser({
             channelsVerified: false,
@@ -100,6 +106,8 @@ export function ChannelVerificationModal() {
         }
         if (interactive) {
           setStatusMessage("❌ আপনি এখনো সব চ্যানেলে জয়েন করেননি! দয়া করে চ্যানেলে জয়েন করুন।");
+        } else {
+          setStatusMessage("⚠️ চ্যানেল ভেরিফিকেশন প্রয়োজন। দয়া করে চ্যানেলে জয়েন করুন।");
         }
       }
     } catch (err) {
@@ -111,7 +119,7 @@ export function ChannelVerificationModal() {
     }
   }, [user, channels, updateUser, settings.botToken]);
 
-  // Determine if popup should display & run initial check
+  // 1. Run live check EVERY TIME user enters the website (Mount / Initial Load)
   useEffect(() => {
     if (!forceJoin) {
       setIsOpen(false);
@@ -120,13 +128,43 @@ export function ChannelVerificationModal() {
 
     if (!user) return;
 
+    // If user is not verified, show modal immediately while checking
     if (!user.channelsVerified) {
       setIsOpen(true);
-      runLiveCheck(false);
-    } else {
-      setIsOpen(false);
     }
-  }, [user?.id, user?.channelsVerified, forceJoin, runLiveCheck]);
+
+    // Always run live check on website entry!
+    if (!hasInitialCheckedRef.current) {
+      hasInitialCheckedRef.current = true;
+      runLiveCheck(false);
+    }
+  }, [user?.id, forceJoin, runLiveCheck]);
+
+  // 2. Periodic background verification + on focus / visibility change
+  // Re-verifies every time user switches back to the tab or every 25 seconds
+  useEffect(() => {
+    if (!forceJoin || !user) return;
+
+    const interval = setInterval(() => {
+      runLiveCheck(false);
+    }, isOpen ? 5000 : 25000);
+
+    const handleFocus = () => runLiveCheck(false);
+    const handleVisibility = () => {
+      if (document.visibilityState === "visible") {
+        runLiveCheck(false);
+      }
+    };
+
+    window.addEventListener("focus", handleFocus);
+    document.addEventListener("visibilitychange", handleVisibility);
+
+    return () => {
+      clearInterval(interval);
+      window.removeEventListener("focus", handleFocus);
+      document.removeEventListener("visibilitychange", handleVisibility);
+    };
+  }, [isOpen, user, forceJoin, runLiveCheck]);
 
   // Handle clicking "Join Channel" -> Opens Telegram channel (does NOT fake verified!)
   const handleJoin = (channel: RequiredChannel) => {
@@ -184,9 +222,8 @@ export function ChannelVerificationModal() {
 
   return (
     /* 
-      Transparent Overlay: 
-      - Removed pitch-black opaque background as requested by user ("কালো কালার ব্যাকগ্রাউন্ড টা ডিলিট করে দাও। একটা সাইট দিয়ে যে কালো ওয়েবসাইট দেখা যায় না ওয়েবসাইট দেখা যাবে।")
-      - Subtle 20% shadow so the entire website, posts, stories and header remain 100% visible behind the modal!
+      Transparent Overlay:
+      - Clean transparent background so the website remains visible behind the modal.
     */
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/25 p-3 animate-in fade-in duration-200">
       <div className="relative w-full max-w-[340px] sm:max-w-[350px] select-none">
