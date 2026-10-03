@@ -15,6 +15,12 @@ import {
   Banknote,
   Search,
   Trash,
+  Send,
+  ExternalLink,
+  CheckCircle2,
+  XCircle,
+  RefreshCw,
+  Power,
 } from "lucide-react";
 
 const SESSION_KEY = "pc_panel_session";
@@ -92,6 +98,7 @@ export function AdminPanelPage() {
 
   const tabs = [
     { key: "settings", label: "Rewards & Tiers", Icon: SettingsIcon },
+    { key: "channels", label: "Telegram Channels (ভেরিফিকেশন)", Icon: Send },
     { key: "ads", label: "Ads & Bot", Icon: Megaphone },
     { key: "users", label: "Users", Icon: UsersIcon },
     { key: "posts", label: "Posts", Icon: ImageIcon },
@@ -137,6 +144,9 @@ export function AdminPanelPage() {
       <div className="px-4">
         {activeTab === "settings" && (
           <SettingsTab settings={settings} save={saveSettings} />
+        )}
+        {activeTab === "channels" && (
+          <ChannelsTab settings={settings} save={saveSettings} />
         )}
         {activeTab === "ads" && (
           <AdsTab settings={settings} save={saveSettings} />
@@ -519,6 +529,291 @@ function AdsTab({
         />
       </SectionCard>
 
+      <SaveButton onSave={handleSave} saved={saved} />
+    </>
+  );
+}
+
+function ChannelsTab({
+  settings,
+  save,
+}: {
+  settings: Settings;
+  save: (s: Partial<Settings>) => Promise<void>;
+}) {
+  const [enabled, setEnabled] = useState(Boolean(settings.forceChannelJoin ?? true));
+  const [ch1Name, setCh1Name] = useState(
+    settings.requiredChannels?.[0]?.name || "Main Channel"
+  );
+  const [ch1Url, setCh1Url] = useState(
+    settings.requiredChannels?.[0]?.url || "https://t.me/jgjghjghh687"
+  );
+  const [ch2Name, setCh2Name] = useState(
+    settings.requiredChannels?.[1]?.name || "Support Channel"
+  );
+  const [ch2Url, setCh2Url] = useState(
+    settings.requiredChannels?.[1]?.url || "https://t.me/Earning_Money_Lob"
+  );
+  const [botToken, setBotToken] = useState(
+    settings.botToken || "8738784866:AAFk8eHwv2xuswJTCBxGcvKAwZuUJHq4bK0"
+  );
+  const [botLink, setBotLink] = useState(
+    settings.botLink || "https://t.me/PhotoCash12_bot"
+  );
+  const [saved, setSaved] = useState(false);
+  const [testUserId, setTestUserId] = useState("");
+  const [testing, setTesting] = useState(false);
+  const [testResult, setTestResult] = useState<string | null>(null);
+
+  useEffect(() => {
+    setEnabled(Boolean(settings.forceChannelJoin ?? true));
+    setCh1Name(settings.requiredChannels?.[0]?.name || "Main Channel");
+    setCh1Url(settings.requiredChannels?.[0]?.url || "https://t.me/jgjghjghh687");
+    setCh2Name(settings.requiredChannels?.[1]?.name || "Support Channel");
+    setCh2Url(settings.requiredChannels?.[1]?.url || "https://t.me/Earning_Money_Lob");
+    setBotToken(settings.botToken || "8738784866:AAFk8eHwv2xuswJTCBxGcvKAwZuUJHq4bK0");
+    setBotLink(settings.botLink || "https://t.me/PhotoCash12_bot");
+  }, [settings]);
+
+  const extractClean = (urlOrName: string) => {
+    return urlOrName
+      .trim()
+      .replace(/https?:\/\/t\.me\//i, "")
+      .replace(/^@/, "")
+      .split("/")[0]
+      .split("?")[0]
+      .trim();
+  };
+
+  const handleSave = async () => {
+    const u1 = extractClean(ch1Url);
+    const u2 = extractClean(ch2Url);
+
+    const requiredChannels = [
+      {
+        name: ch1Name.trim() || "Main Channel",
+        url: ch1Url.trim().startsWith("http")
+          ? ch1Url.trim()
+          : `https://t.me/${u1}`,
+        username: u1,
+      },
+      {
+        name: ch2Name.trim() || "Support Channel",
+        url: ch2Url.trim().startsWith("http")
+          ? ch2Url.trim()
+          : `https://t.me/${u2}`,
+        username: u2,
+      },
+    ];
+
+    await save({
+      forceChannelJoin: enabled,
+      requiredChannels,
+      botToken: botToken.trim(),
+      botLink: botLink.trim(),
+    });
+
+    setSaved(true);
+    setTimeout(() => setSaved(false), 2000);
+  };
+
+  const handleTestBot = async () => {
+    if (!testUserId.trim()) {
+      setTestResult("⚠️ অনুগ্রহ করে একটি টেলিগ্রাম ইউজার আইডি লিখুন (যেমন: 8235864550)");
+      return;
+    }
+    setTesting(true);
+    setTestResult(null);
+
+    const u1 = extractClean(ch1Url);
+    try {
+      const res = await fetch(
+        `/api/verify-channel?user_id=${testUserId.trim()}&channel=${encodeURIComponent(
+          u1
+        )}&bot_token=${encodeURIComponent(botToken.trim())}`
+      );
+      const data = await res.json();
+      if (data.ok) {
+        if (data.joined) {
+          setTestResult(`✅ ইউজার ${testUserId} সফলভাবে @${u1} চ্যানেলে জয়েন আছে! (Status: ${data.status})`);
+        } else {
+          setTestResult(`❌ ইউজার ${testUserId} এখনো @${u1} চ্যানেলে জয়েন করেনি! (${data.description || data.status})`);
+        }
+      } else {
+        setTestResult(`❌ বট যাচাই ব্যর্থ হয়েছে: ${data.description || "Unknown error"}`);
+      }
+    } catch (err: any) {
+      setTestResult(`❌ কানেকশন এরর: ${err.message}`);
+    } finally {
+      setTesting(false);
+    }
+  };
+
+  return (
+    <>
+      {/* Master Toggle Card */}
+      <section className="mb-4 rounded-2xl border border-white/10 bg-gradient-to-br from-[#171a21] to-[#12141a] p-4 shadow-lg">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <div className="flex items-center gap-2">
+              <Power size={18} className={enabled ? "text-emerald-400" : "text-red-400"} />
+              <h2 className="text-[14px] font-bold text-white">
+                চ্যানেল ভেরিফিকেশন সিস্টেম অন/অফ (Master Switch)
+              </h2>
+            </div>
+            <p className="mt-1 text-[11px] text-white/60">
+              {enabled
+                ? "🟢 সিস্টেম চালু আছে: ইউজাররা ওয়েবসাইটে প্রবেশ করলে বাধ্যতামূলক চ্যানেল ভেরিফাই করতে হবে।"
+                : "🔴 সিস্টেম বন্ধ আছে: কোনো পপআপ আসবে না, সরাসরি সব ইউজার ওয়েবসাইট ব্যবহার করতে পারবে।"}
+            </p>
+          </div>
+
+          <button
+            type="button"
+            onClick={() => setEnabled(!enabled)}
+            className={`flex items-center justify-center gap-2 rounded-xl px-4 py-2.5 text-[12px] font-bold transition-all active:scale-95 cursor-pointer shadow-md ${
+              enabled
+                ? "bg-emerald-500 text-black shadow-emerald-500/20 hover:bg-emerald-400"
+                : "bg-red-600 text-white shadow-red-600/30 hover:bg-red-500"
+            }`}
+          >
+            <Power size={15} />
+            <span>{enabled ? "সিস্টেম চালু (ON)" : "সিস্টেম বন্ধ (OFF)"}</span>
+          </button>
+        </div>
+      </section>
+
+      {/* Channel 1 Settings */}
+      <SectionCard title="১. প্রধান চ্যানেল (Channel 1 - Main Channel)">
+        <FormInput
+          label="চ্যানেলের নাম (Channel Name)"
+          value={ch1Name}
+          onChange={(v) => setCh1Name(v)}
+          hint="যেমন: Main Channel অথবা আপনার চ্যানেলের নাম"
+        />
+
+        <div className="space-y-1">
+          <FormInput
+            label="চ্যানেল লিংক বা ইউজারনেম (Telegram Channel URL / Username)"
+            value={ch1Url}
+            onChange={(v) => setCh1Url(v)}
+            hint="যেমন: https://t.me/jgjghjghh687 বা @jgjghjghh687"
+          />
+          {ch1Url && (
+            <div className="flex items-center gap-2 pt-1 text-[11px]">
+              <span className="text-white/40">শনাক্তকৃত ইউজারনেম:</span>
+              <span className="font-mono font-bold text-emerald-400">@{extractClean(ch1Url) || "none"}</span>
+              <a
+                href={ch1Url.startsWith("http") ? ch1Url : `https://t.me/${extractClean(ch1Url)}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="ml-auto flex items-center gap-1 text-emerald-400 hover:underline"
+              >
+                <span>লিংক টেস্ট করুন</span>
+                <ExternalLink size={11} />
+              </a>
+            </div>
+          )}
+        </div>
+      </SectionCard>
+
+      {/* Channel 2 Settings */}
+      <SectionCard title="২. সাপোর্ট চ্যানেল (Channel 2 - Support Channel)">
+        <FormInput
+          label="চ্যানেলের নাম (Channel Name)"
+          value={ch2Name}
+          onChange={(v) => setCh2Name(v)}
+          hint="যেমন: Support Channel অথবা ব্যাকআপ চ্যানেলের নাম"
+        />
+
+        <div className="space-y-1">
+          <FormInput
+            label="চ্যানেল লিংক বা ইউজারনেম (Telegram Channel URL / Username)"
+            value={ch2Url}
+            onChange={(v) => setCh2Url(v)}
+            hint="যেমন: https://t.me/Earning_Money_Lob বা @Earning_Money_Lob"
+          />
+          {ch2Url && (
+            <div className="flex items-center gap-2 pt-1 text-[11px]">
+              <span className="text-white/40">শনাক্তকৃত ইউজারনেম:</span>
+              <span className="font-mono font-bold text-emerald-400">@{extractClean(ch2Url) || "none"}</span>
+              <a
+                href={ch2Url.startsWith("http") ? ch2Url : `https://t.me/${extractClean(ch2Url)}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="ml-auto flex items-center gap-1 text-emerald-400 hover:underline"
+              >
+                <span>লিংক টেস্ট করুন</span>
+                <ExternalLink size={11} />
+              </a>
+            </div>
+          )}
+        </div>
+      </SectionCard>
+
+      {/* Telegram Bot Token & API */}
+      <SectionCard title="টেলিগ্রাম বট কনফিগারেশন (Telegram Bot Settings)">
+        <FormInput
+          label="টেলিগ্রাম বট টোকেন (Telegram Bot Token)"
+          value={botToken}
+          onChange={(v) => setBotToken(v)}
+          hint="বটফাদার থেকে পাওয়া টোকেন (যেমন: 8738784866:AAFk8eHwv2xuswJTCBxGcvKAwZuUJHq4bK0)"
+        />
+
+        <FormInput
+          label="টেলিগ্রাম বট লিংক (Telegram Bot Link)"
+          value={botLink}
+          onChange={(v) => setBotLink(v)}
+          hint="যেমন: https://t.me/PhotoCash12_bot"
+        />
+
+        <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 p-3 text-[11px] text-amber-200">
+          <p className="font-bold">⚠️ অতি গুরুত্বপূর্ণ নিয়ম:</p>
+          <p className="mt-0.5 leading-relaxed">
+            টেলিগ্রামের নিয়মানুযায়ী মেম্বারশিপ চেক করার জন্য আপনার টেলিগ্রাম বটটিকে (যেমন: <strong>@PhotoCash12_bot</strong>) আপনার উভয় চ্যানেলেই অবশ্যই <strong>Administrator (অ্যাডমিন)</strong> হিসেবে যুক্ত রাখতে হবে।
+          </p>
+        </div>
+      </SectionCard>
+
+      {/* Live Bot Connectivity Test */}
+      <SectionCard title="বট দিয়ে লাইভ মেম্বারশিপ টেস্ট করুন (Live Verification Test)">
+        <div className="flex flex-col gap-2 sm:flex-row">
+          <input
+            type="text"
+            value={testUserId}
+            onChange={(e) => setTestUserId(e.target.value)}
+            placeholder="ইউজারের টেলিগ্রাম আইডি লিখুন (যেমন: 8235864550)"
+            className="flex-1 rounded-lg bg-black/40 px-3 py-2 text-[12px] text-white outline-none ring-1 ring-white/10 focus:ring-emerald-400"
+          />
+          <button
+            type="button"
+            onClick={handleTestBot}
+            disabled={testing}
+            className="flex items-center justify-center gap-1.5 rounded-lg bg-white/10 px-4 py-2 text-[12px] font-bold text-white hover:bg-white/20 active:scale-95 disabled:opacity-50"
+          >
+            {testing ? (
+              <RefreshCw size={13} className="animate-spin text-emerald-400" />
+            ) : (
+              <RefreshCw size={13} />
+            )}
+            <span>টেস্ট করুন</span>
+          </button>
+        </div>
+
+        {testResult && (
+          <div
+            className={`mt-2 rounded-lg p-2.5 text-[11px] font-semibold leading-relaxed ${
+              testResult.startsWith("✅")
+                ? "border border-emerald-500/40 bg-emerald-500/10 text-emerald-300"
+                : "border border-red-500/40 bg-red-500/10 text-red-300"
+            }`}
+          >
+            {testResult}
+          </div>
+        )}
+      </SectionCard>
+
+      {/* Save Button */}
       <SaveButton onSave={handleSave} saved={saved} />
     </>
   );
