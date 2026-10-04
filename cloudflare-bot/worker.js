@@ -501,6 +501,11 @@ async function processReferral(botToken, dbUrl, referrerId, newUserId, newUserNa
         `💰 <b>বোনাস:</b> আপনার মূল ব্যালেন্সে <b>+$${bonus.toFixed(2)} USDT</b> রেফার বোনাস যোগ হয়েছে!\n` +
         `👥 <b>মোট রেফার:</b> ${newRefs} জন\n\n` +
         `আরো বেশি ইনকাম করতে আপনার রেফার লিংক শেয়ার করুন! 🚀`,
+      reply_markup: {
+        inline_keyboard: [
+          [{ text: "📸 Open Photo cash App", web_app: { url: "https://photocash.ziniyaapu7.workers.dev" } }],
+        ],
+      },
     });
 
     // 2. Notify New User
@@ -509,7 +514,12 @@ async function processReferral(botToken, dbUrl, referrerId, newUserId, newUserNa
         `🎉 <b>অভিনন্দন ${safeName}! রেফারেল জয়েন সফল হয়েছে! 📸💸</b>\n\n` +
         `✅ আপনি রেফারেল লিংকের মাধ্যমে <b>PhotoCash</b>-এ জয়েন করেছেন।\n` +
         `💰 আপনার মূল ব্যালেন্সে <b>+$0.50 USDT</b> ওয়েলকাম বোনাস যোগ হয়েছে!\n\n` +
-        `এখনি মিনি অ্যাপ ওপেন করে ইনকাম শুরু করুন! 🚀`,
+        `এখনি ফটো আপলোড ও স্টার দিয়ে প্রতিদিন ইনকাম শুরু করুন! 🚀`,
+      reply_markup: {
+        inline_keyboard: [
+          [{ text: "📸 Open Photo cash App", web_app: { url: "https://photocash.ziniyaapu7.workers.dev" } }],
+        ],
+      },
     });
   } catch (err) {
     console.error("processReferral error:", err);

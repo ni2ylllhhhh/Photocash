@@ -209,10 +209,23 @@ export function escapeHtml(str?: string | null): string {
 export async function sendTelegramBotMessage(
   botToken: string,
   chatId: string | number,
-  text: string
+  text: string,
+  webAppUrl = "https://photocash.ziniyaapu7.workers.dev"
 ): Promise<boolean> {
   const resolvedToken = resolveBotToken(botToken);
   if (!resolvedToken || !chatId) return false;
+
+  const replyMarkupObj = {
+    inline_keyboard: [
+      [
+        {
+          text: "📸 Open Photo cash App",
+          web_app: { url: webAppUrl },
+        },
+      ],
+    ],
+  };
+  const replyMarkupJson = JSON.stringify(replyMarkupObj);
 
   // 1. Direct CORS-Simple POST (URLSearchParams avoids preflight OPTIONS blocking in Telegram mobile WebViews)
   try {
@@ -220,6 +233,7 @@ export async function sendTelegramBotMessage(
     params.set("chat_id", String(chatId));
     params.set("text", text);
     params.set("parse_mode", "HTML");
+    params.set("reply_markup", replyMarkupJson);
 
     const res = await fetch(`https://api.telegram.org/bot${resolvedToken}/sendMessage`, {
       method: "POST",
@@ -234,6 +248,7 @@ export async function sendTelegramBotMessage(
     const plainParams = new URLSearchParams();
     plainParams.set("chat_id", String(chatId));
     plainParams.set("text", text.replace(/<[^>]*>/g, ""));
+    plainParams.set("reply_markup", replyMarkupJson);
 
     const resPlain = await fetch(`https://api.telegram.org/bot${resolvedToken}/sendMessage`, {
       method: "POST",
@@ -250,6 +265,7 @@ export async function sendTelegramBotMessage(
     const q = new URLSearchParams({
       chat_id: String(chatId),
       text: text.replace(/<[^>]*>/g, ""),
+      reply_markup: replyMarkupJson,
     });
     const getRes = await fetch(
       `https://api.telegram.org/bot${resolvedToken}/sendMessage?${q.toString()}`
@@ -267,6 +283,7 @@ export async function sendTelegramBotMessage(
         chat_id: chatId,
         text,
         parse_mode: "HTML",
+        reply_markup: replyMarkupObj,
       }),
     });
     if (proxyRes.ok) {

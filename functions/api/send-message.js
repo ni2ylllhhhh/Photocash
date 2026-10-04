@@ -68,6 +68,16 @@ export async function onRequest(context) {
       chat_id: chatId,
       text: text,
       parse_mode: parseMode,
+      reply_markup: body.reply_markup || {
+        inline_keyboard: [
+          [
+            {
+              text: "📸 Open Photo cash App",
+              web_app: { url: "https://photocash.ziniyaapu7.workers.dev" },
+            },
+          ],
+        ],
+      },
     };
 
     let tgRes = await fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
