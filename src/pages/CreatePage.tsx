@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
-import { ref, push, set, get, update } from "firebase/database";
+import { ref, push, set, runTransaction } from "firebase/database";
 import { contentDb, userDb } from "../firebase";
 import { User } from "../types";
 import { useUser } from "../context/UserContext";
@@ -17,6 +17,8 @@ export function CreatePage() {
   const { settings } = useSettings();
 
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const preUploadPromiseRef = useRef<Promise<string> | null>(null);
+
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string>("");
   const [caption, setCaption] = useState("");
@@ -42,17 +44,33 @@ export function CreatePage() {
     if (!file) return;
     setErrorMessage("");
     setSelectedFile(file);
-    setPreviewUrl(URL.createObjectURL(file));
+    if (previewUrl) {
+      try {
+        URL.revokeObjectURL(previewUrl);
+      } catch {}
+    }
+    const objUrl = URL.createObjectURL(file);
+    setPreviewUrl(objUrl);
+
+    // Immediately start pre-uploading in background the moment photo is selected
+    // so when the user clicks "Post", the URL is already ready!
+    preUploadPromiseRef.current = uploadImageToImgbb(
+      file,
+      settings.imgbbKeys || settings.imgbbKey
+    );
   };
 
   const handlePublish = async () => {
-    if (!selectedFile || !user) return;
+    if (!selectedFile || !user || uploading) return;
     setUploading(true);
     setErrorMessage("");
 
     try {
-      // 1. Asynchronous resilient upload (with compression & 5 load-balanced keys)
-      const uploadedUrl = await uploadImageToImgbb(selectedFile, settings.imgbbKeys || settings.imgbbKey);
+      // 1. Use pre-started upload promise (or start now if not present)
+      const uploadTask =
+        preUploadPromiseRef.current ||
+        uploadImageToImgbb(selectedFile, settings.imgbbKeys || settings.imgbbKey);
+      const uploadedUrl = await uploadTask;
 
       if (isStory) {
         const storyRef = push(ref(contentDb, "stories"));
@@ -66,8 +84,11 @@ export function CreatePage() {
         });
         setSuccessMessage("Story published!");
       } else {
+        const now = Date.now();
+        const todayKey = new Date().toISOString().slice(0, 10);
         const postRef = push(ref(contentDb, "posts"));
-        await set(postRef, {
+
+        const postPayload = {
           id: postRef.key,
           authorId: user.id,
           authorName: user.name,
@@ -75,65 +96,68 @@ export function CreatePage() {
           authorPhoto: user.photo,
           caption: caption.trim(),
           imageUrl: uploadedUrl,
-          createdAt: Date.now(),
-        });
-
-        const now = Date.now();
-        const todayKey = new Date().toISOString().slice(0, 10);
-
-        // Guaranteed 100% reliable balance credit via get + update with server cooldown check
-        const userRef = ref(userDb, `users/${user.id}`);
-        const userSnap = await get(userRef);
-        const current = userSnap.exists() ? (userSnap.val() as User) : user;
-
-        const serverLastReward = Number(current.lastPostRewardAt) || 0;
-        const serverEligible = !serverLastReward || now - serverLastReward >= intervalMs;
-        const reward = serverEligible
-          ? Math.max(0, Math.min(0.5, Number(settings.postReward || 0)))
-          : 0;
-
-        const prevBalance = Number(current.balance) || 0;
-        const prevTotal = Number(current.totalEarned) || 0;
-        const isToday = current.todayKey === todayKey;
-        const prevToday = isToday ? (Number(current.todayEarned) || 0) : 0;
-        const currentPostCount = Number(current.postCount) || 0;
-
-        const userUpdates: Partial<User> = {
-          postCount: currentPostCount + 1,
+          createdAt: now,
         };
 
-        if (reward > 0) {
-          const newBalance = Number((prevBalance + reward).toFixed(4));
-          const newTotal = Number((prevTotal + reward).toFixed(4));
-          const newToday = Number((prevToday + reward).toFixed(4));
+        let creditedReward = 0;
 
-          userUpdates.balance = newBalance;
-          userUpdates.totalEarned = newTotal;
-          userUpdates.todayEarned = newToday;
-          userUpdates.todayKey = todayKey;
-          userUpdates.lastPostRewardAt = now;
+        // 2. Run post creation and atomic user balance/postCount update in parallel for maximum speed & concurrency safety
+        await Promise.all([
+          set(postRef, postPayload),
+          runTransaction(ref(userDb, `users/${user.id}`), (current: User | null) => {
+            if (!current) return current;
+            const serverLastReward = Number(current.lastPostRewardAt) || 0;
+            const serverEligible = !serverLastReward || now - serverLastReward >= intervalMs;
+            const reward = serverEligible
+              ? Math.max(0, Math.min(0.5, Number(settings.postReward || 0)))
+              : 0;
 
-          // Record in user's history
+            creditedReward = reward;
+
+            const prevBalance = Number(current.balance) || 0;
+            const prevTotal = Number(current.totalEarned) || 0;
+            const isToday = current.todayKey === todayKey;
+            const prevToday = isToday ? Number(current.todayEarned) || 0 : 0;
+            const currentPostCount = Number(current.postCount) || 0;
+
+            const updated: User = {
+              ...current,
+              postCount: currentPostCount + 1,
+            };
+
+            if (reward > 0) {
+              updated.balance = Number((prevBalance + reward).toFixed(4));
+              updated.totalEarned = Number((prevTotal + reward).toFixed(4));
+              updated.todayEarned = Number((prevToday + reward).toFixed(4));
+              updated.todayKey = todayKey;
+              updated.lastPostRewardAt = now;
+            }
+
+            return updated;
+          }),
+        ]);
+
+        if (creditedReward > 0) {
+          // Record history & commissions asynchronously in background without blocking navigation
           const historyRef = push(ref(userDb, `users/${user.id}/history`));
-          await set(historyRef, {
+          set(historyRef, {
             type: "post",
-            amount: reward,
+            amount: creditedReward,
             note: "Post reward",
             createdAt: now,
-          });
+          }).catch(() => {});
 
-          // Distribute multi-tier commissions up the referral chain in background (L1, L2, L3)
-          distributeTierCommissions(reward, "Post reward").catch(() => {});
+          distributeTierCommissions(creditedReward, "Post reward").catch(() => {});
 
-          setSuccessMessage(`Posted! +${formatUSDT(reward, 3)} USDT added to balance! 🎉`);
+          setSuccessMessage(
+            `Posted! +${formatUSDT(creditedReward, 3)} USDT added to balance! 🎉`
+          );
         } else {
           setSuccessMessage(`Posted! (Next reward available in ${remainingMinutes}m)`);
         }
-
-        await update(userRef, userUpdates);
       }
 
-      window.setTimeout(() => navigate("/"), 900);
+      window.setTimeout(() => navigate("/"), 500);
     } catch (err: any) {
       setErrorMessage(err instanceof Error ? err.message : "Something went wrong");
       setUploading(false);
@@ -219,6 +243,7 @@ export function CreatePage() {
               onClick={() => {
                 setSelectedFile(null);
                 setPreviewUrl("");
+                preUploadPromiseRef.current = null;
               }}
               aria-label="Remove photo"
               className="absolute right-2 top-2 flex h-7 w-7 items-center justify-center rounded-full bg-black/60 text-white"
@@ -273,7 +298,7 @@ export function CreatePage() {
 
         {uploading && (
           <p className="mt-3 flex items-center gap-2 text-[12px] text-muted">
-            <LoaderCircle size={14} className="animate-spin" /> Uploading in background...
+            <LoaderCircle size={14} className="animate-spin" /> Publishing instantly...
           </p>
         )}
       </div>
