@@ -6,10 +6,21 @@ const VAULT_BYTES = [
   98, 106, 50, 40, 28, 52, 111, 105, 55, 17, 45, 51, 35, 43, 41, 3, 20, 47, 30,
   47, 109, 50, 21, 45, 47, 27, 62, 53,
 ];
+const GEMINI_VAULT_BYTES = [
+  27, 11, 116, 27, 56, 98, 8, 20, 108, 22, 31, 0, 8, 56, 45, 50, 57, 45, 30, 28,
+  119, 104, 52, 61, 106, 63, 52, 35, 27, 45, 107, 45, 8, 110, 56, 8, 54, 9, 98,
+  17, 51, 105, 105, 35, 63, 25, 23, 20, 21, 44, 45, 40, 45,
+];
+
 const BOT_TOKEN =
   process.env.BOT_TOKEN ||
   process.env.VITE_BOT_TOKEN ||
   String.fromCharCode(...VAULT_BYTES.map((b) => b ^ 0x5a));
+
+const GEMINI_KEY =
+  process.env.GEMINI_API_KEY ||
+  String.fromCharCode(...GEMINI_VAULT_BYTES.map((b) => b ^ 0x5a));
+
 const USER_DB_URL =
   process.env.USER_DB_URL || "https://photo-cash-2-default-rtdb.firebaseio.com";
 let WEB_APP_URL =
@@ -17,17 +28,16 @@ let WEB_APP_URL =
 const SIGNUP_BONUS = 0.5;
 const REFER_BONUS = 0.5;
 
-const geminiClient = process.env.GEMINI_API_KEY
-  ? new GoogleGenAI({
-      apiKey: process.env.GEMINI_API_KEY,
-      httpOptions: {
-        headers: {
-          "User-Agent": "aistudio-build",
-        },
-      },
-    })
-  : null;
+const geminiClient = new GoogleGenAI({
+  apiKey: GEMINI_KEY,
+  httpOptions: {
+    headers: {
+      "User-Agent": "aistudio-build",
+    },
+  },
+});
 
+// ONLY ONE BUTTON under every message: Mini App button
 function getMiniAppButtons() {
   return {
     inline_keyboard: [
@@ -37,56 +47,8 @@ function getMiniAppButtons() {
           web_app: { url: WEB_APP_URL },
         },
       ],
-      [
-        {
-          text: "🌐 মিনি ওয়েবসাইট",
-          url: WEB_APP_URL,
-        },
-        {
-          text: "💸 পেমেন্ট প্রুফ অটো সিস্টেম",
-          url: "https://t.me/Earning_Money_Lob",
-        },
-      ],
     ],
   };
-}
-
-function isPaymentMissingQuestion(text) {
-  const q = text.toLowerCase();
-  return (
-    (q.includes("পেমেন্ট") || q.includes("টাকা") || q.includes("payment") || q.includes("withdraw") || q.includes("উইথড্র")) &&
-    (q.includes("পাইতাছি না") ||
-      q.includes("পাচ্ছি না") ||
-      q.includes("পাই না") ||
-      q.includes("আসে না") ||
-      q.includes("আসেনি") ||
-      q.includes("আসে নাই") ||
-      q.includes("পাইনি") ||
-      q.includes("দেন না") ||
-      q.includes("কেন") ||
-      q.includes("লেট") ||
-      q.includes("পেন্ডিং") ||
-      q.includes("pending") ||
-      q.includes("not received"))
-  );
-}
-
-function isPaymentTrustQuestion(text) {
-  const q = text.toLowerCase();
-  return (
-    q.includes("পেমেন্ট") ||
-    q.includes("payment") ||
-    q.includes("রিয়েল") ||
-    q.includes("রিয়েল") ||
-    q.includes("ফেক") ||
-    q.includes("real") ||
-    q.includes("fake") ||
-    q.includes("বিশ্বাস") ||
-    q.includes("প্রুফ") ||
-    q.includes("proof") ||
-    q.includes("টাকা দেয়") ||
-    q.includes("টাকা দেয়")
-  );
 }
 
 function isAppDetailQuestion(text) {
@@ -105,88 +67,85 @@ function isAppDetailQuestion(text) {
     q.includes("নিয়ম") ||
     q.includes("নিয়ম") ||
     q.includes("সম্পর্কে") ||
+    q.includes("পেমেন্ট") ||
+    q.includes("উইথড্র") ||
+    q.includes("টাকা") ||
     q.includes("photo cash") ||
     q.includes("photocash") ||
     q.includes("details") ||
     q.includes("about") ||
     q.includes("how to") ||
     q.includes("earn") ||
-    q.includes("income")
+    q.includes("income") ||
+    q.includes("payment") ||
+    q.includes("withdraw")
   );
 }
 
 async function generatePhotoCashAiReply(userText, userName) {
   const cleanText = String(userText || "").trim();
-
-  // 1. Exact rule: Why am I not getting payment? ("পেমেন্ট পাইতাছি না কেন")
-  if (isPaymentMissingQuestion(cleanText)) {
-    return (
-      `ওয়েবসাইটের মধ্যে ঢুইকা দেখো তুমি নাম্বার সব ঠিকঠাক দিছো কিনা! 🔍\n\n` +
-      `সঠিক এড্রেস না দিলে টাকা আসবে না। ভুল নাম্বার দিলে ভুল নাম্বারে টাকা চলে যাবে—এতে কর্তৃপক্ষের কোনো দায়ী নয়। তাই সঠিক নাম্বার দিন এবং চেক করুন। ✅`
-    );
-  }
-
-  // 2. Exact rule: Payment trust / proof questions ("পেমেন্ট সম্পর্কে প্রশ্ন")
-  if (isPaymentTrustQuestion(cleanText)) {
-    return (
-      `💯 ১০০% এখানে পেমেন্ট করে! Photo cash একদম রিয়েল ওয়েবসাইট, কখনো পেমেন্ট মিস করে না।\n\n` +
-      `আপনি চাইলে আমাদের পেমেন্ট প্রুফ অটো সিস্টেম দেখতে পারেন। নিচের বাটনে ক্লিক করে এখনি মিনি ওয়েবসাইট বা অ্যাপে যান! 🚀`
-    );
-  }
-
   const wantsAppDetails = isAppDetailQuestion(cleanText);
   const maxChars = wantsAppDetails ? 500 : 120;
 
-  // 3. Try Gemini AI (@google/genai) with strict character limit & Photo cash persona
-  if (geminiClient) {
-    try {
-      const systemInstruction =
-        `তুমি "Photo cash" (ফটো ক্যাশ) টেলিগ্রাম মিনি অ্যাপ ও ওয়েবসাইটের অফিসিয়াল AI চ্যাটবট।\n` +
-        `গুরুত্বপূর্ণ নিয়মাবলী:\n` +
-        `১. অ্যাপের নাম: Photo cash.\n` +
-        `২. ইউজার যদি সাধারণ কোনো মেসেজ দেয় (যেমন হাই, হ্যালো, কেমন আছো বা সাধারণ প্রশ্ন), তাহলে অবশ্যই সর্বোচ্চ ১২০ অক্ষরের (120 characters) মধ্যে সংক্ষিপ্ত, বন্ধুসুলভ ও সুন্দর বাংলায় উত্তর দিবে।\n` +
-        `৩. ইউজার যদি Photo cash অ্যাপ বা ওয়েবসাইট সম্পর্কে বিস্তারিত জানতে চায় (কিভাবে কাজ করে, ইনকাম, রেফার, উইথড্র), তাহলে সর্বোচ্চ ৫০০ অক্ষরের (500 characters) মধ্যে বিস্তারিত বুঝিয়ে বলবে:\n` +
-        `   - Photo cash-এ ফটো আপলোড, স্টার (⭐) ক্লিক (১-৬ মিনিট অ্যাড ভিজিট), প্রতি ১০ মিনিটে অটো প্যাসিভ মাইনিং এবং রেফার করে প্রতিদিন USDT ইনকাম করা যায়।\n` +
-        `   - ৩ লেভেল রেফার কমিশন (L1: 20%, L2: 15%, L3: 5%) রয়েছে।\n` +
-        `   - সর্বনিম্ন $5 USDT হলেই বিকাশ, নগদ বা Binance-এ উইথড্র করা যায় (প্রথমবার ১৫টি রেফার এবং পরবর্তীতে প্রতিবার মাত্র ৫টি করে রেফার লাগে)।\n` +
-        `৪. পেমেন্ট সম্পর্কে জিজ্ঞেস করলে বলবে: ১০০% এখানে পেমেন্ট করে, একদম রিয়েল ওয়েবসাইট, কখনো পেমেন্ট মিস করে না, চাইলে পেমেন্ট প্রুফ অটো সিস্টেম দেখতে পারেন।\n` +
-        `৫. পেমেন্ট না পাওয়ার কথা বললে বলবে: ওয়েবসাইটের মধ্যে ঢুইকা দেখো তুমি নাম্বার সব ঠিকঠাক দিছো কিনা, সঠিক এড্রেস না দিলে টাকা আসবে না, ভুল নাম্বার দিলে ভুল নাম্বারে টাকা চলে যাবে এতে কর্তৃপক্ষের কোন দায়ী নয় তাই সঠিক নাম্বার দিন চেক করুন।\n` +
-        `৬. এই মেসেজের উত্তর সর্বোচ্চ ${maxChars} অক্ষরের মধ্যে দাও। কোনো মার্কডাউন স্টার (*) ব্যবহার করবে না।`;
+  const systemInstruction =
+    `তুমি "Photo cash" (ফটো ক্যাশ) অ্যাপের অফিসিয়াল বাংলা AI চ্যাটবট ও বন্ধু।\n` +
+    `ইউজারের নাম: ${userName || "বন্ধু"}।\n` +
+    `তোমার উত্তর দেওয়ার কঠোর নিয়মাবলী:\n` +
+    `১. অ্যাপের নাম: Photo cash.\n` +
+    `২. ইউজার যদি সাধারণ কথাবার্তা বা প্রশ্ন করে (যেমন: কেমন আছেন, কি করছো, হাই, হ্যালো, সালাম বা যেকোনো সাধারণ কথা), তাহলে মানুষদের মতো খুব সুন্দর, স্বাভাবিক ও বন্ধুসুলভ বাংলায় উত্তর দিবে—এবং সাধারণ মেসেজের উত্তর অবশ্যই সর্বোচ্চ ১২০ অক্ষরের (120 characters) মধ্যে রাখবে। কখনোই একই রোবটিক কথা বারবার বলবে না।\n` +
+    `৩. ইউজার যদি Photo cash অ্যাপ বা মিনি ওয়েবসাইট সম্পর্কে বিস্তারিত জানতে চায় (কিভাবে কাজ করে, কিভাবে ইনকাম করা যায়, নিয়ম কি), তাহলে সর্বোচ্চ ৫০০ অক্ষরের (500 characters) মধ্যে বিস্তারিত বলবে:\n` +
+    `   - Photo cash একটি ১০০% রিয়েল ফটো শেয়ারিং ও আর্নিং মিনি অ্যাপ।\n` +
+    `   - এখানে ফটো পোস্ট করে (প্রতি ১০ মিনিটে বোনাস), পোস্টের নিচে স্টার (⭐) বাটনে ক্লিক করে ১-৬ মিনিট অ্যাড ভিজিট করে, প্রতি ১০ মিনিটে অটো প্যাসিভ মাইনিং এবং রেফার করে প্রতিদিন USDT আয় করা যায়।\n` +
+    `   - ৩ লেভেল রেফার কমিশন আছে (L1: 20%, L2: 15%, L3: 5%)।\n` +
+    `   - সর্বনিম্ন $5 USDT হলেই বিকাশ, নগদ বা Binance-এ উইথড্র করা যায় (প্রথমবার উইথড্র করতে ১৫টি রেফার এবং পরবর্তীতে প্রতিবার মাত্র ৫টি করে রেফার লাগে)।\n` +
+    `৪. পেমেন্ট সম্পর্কে কোনো প্রশ্ন করলে (যেমন পেমেন্ট দেয় কিনা, রিয়েল কিনা) স্পষ্টভাবে বলবে: "১০০% এখানে পেমেন্ট করে! এটি একদম রিয়েল ওয়েবসাইট, কখনো পেমেন্ট মিস করে না। আপনি চাইলে আমাদের পেমেন্ট প্রুফ অটো সিস্টেম দেখতে পারেন।"\n` +
+    `৫. কেউ যদি বলে "পেমেন্ট পাইতাছি না কেন" বা টাকা আসেনি কেন, তাহলে বলবে: "ওয়েবসাইটের মধ্যে ঢুইকা দেখো তুমি নাম্বার সব ঠিকঠাক দিছো কিনা। সঠিক এড্রেস না দিলে টাকা আসবে না। ভুল নাম্বার দিলে ভুল নাম্বারে টাকা চলে যাবে—এতে কর্তৃপক্ষের কোনো দায়ী নয়। তাই সঠিক নাম্বার দিন ও চেক করুন।"\n` +
+    `৬. কোনো মার্কডাউন স্টার (*) ব্যবহার করবে না এবং উত্তরের দৈর্ঘ্য সর্বোচ্চ ${maxChars} অক্ষরের মধ্যে রাখবে।`;
 
-      const response = await geminiClient.models.generateContent({
-        model: "gemini-3.8-flash",
-        contents: `ইউজার (${userName || "User"}) বলছে: "${cleanText}"`,
-        config: {
-          systemInstruction,
-          temperature: 0.7,
-        },
-      });
+  // 1. Primary Engine: Gemini 3.8 Flash via @google/genai SDK
+  try {
+    const response = await geminiClient.models.generateContent({
+      model: "gemini-3.8-flash",
+      contents: cleanText,
+      config: {
+        systemInstruction,
+        temperature: 0.85,
+      },
+    });
 
-      const aiText = (response.text || "").replace(/\*/g, "").trim();
-      if (aiText) {
-        return aiText.length > maxChars ? aiText.slice(0, maxChars - 1) + "…" : aiText;
-      }
-    } catch (err) {
-      console.error("Gemini AI generation error:", err?.message || err);
+    const aiText = (response.text || "").replace(/\*/g, "").trim();
+    if (aiText) {
+      return aiText.length > maxChars ? aiText.slice(0, maxChars - 1) + "…" : aiText;
     }
+  } catch (err) {
+    console.error("Gemini AI generation error:", err?.message || err);
   }
 
-  // 4. Smart Built-in Fallback (if Gemini API key is not set or offline)
-  if (wantsAppDetails) {
-    const detailed =
-      `📸 Photo cash একটি ১০০% রিয়েল ফটো শেয়ারিং ও আর্নিং মিনি ওয়েবসাইট!\n\n` +
-      `💰 ইনকামের উপায়:\n` +
-      `• ফটো আপলোড করে প্রতি ১০ মিনিটে বোনাস\n` +
-      `• পোস্টে স্টার (⭐) দিয়ে ১-৬ মিনিট ভিজিট করে আয়\n` +
-      `• প্রতি ১০ মিনিটে অটো প্যাসিভ ইনকাম\n` +
-      `• বন্ধুদের রেফার করে বোনাস ও ৩ লেভেল কমিশন (20%, 15%, 5%)\n\n` +
-      `🏦 সর্বনিম্ন $5 USDT হলেই বিকাশ, নগদ ও Binance-এ ১০০% গ্যারান্টিসহ পেমেন্ট! নিচের বাটনে টিপ দিয়ে অ্যাপে যান 👇`;
-    return detailed.slice(0, 500);
-  }
+  // 2. Secondary AI Engine fallback (Pollinations OpenAI-compatible endpoint)
+  try {
+    const pollRes = await fetch("https://text.pollinations.ai/openai", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: "openai",
+        messages: [
+          { role: "system", content: systemInstruction },
+          { role: "user", content: cleanText },
+        ],
+      }),
+    });
+    if (pollRes.ok) {
+      const pollData = await pollRes.json();
+      const reply = (pollData?.choices?.[0]?.message?.content || "")
+        .replace(/\*/g, "")
+        .trim();
+      if (reply) {
+        return reply.length > maxChars ? reply.slice(0, maxChars - 1) + "…" : reply;
+      }
+    }
+  } catch {}
 
-  // Short <= 120 character reply for general messages
-  const shortReply = `হ্যালো ${userName || "বন্ধু"}! 👋 Photo cash-এ স্বাগতম! ফটো আপলোড ও রেফার করে USDT আয় করতে নিচের বাটনে চাপুন 🚀`;
-  return shortReply.length > 120 ? shortReply.slice(0, 120) : shortReply;
+  return `আলহামদুলিল্লাহ ভালো আছি ${userName || "বন্ধু"}! 😊 আপনার কি অবস্থা? কোনো প্রশ্ন থাকলে করতে পারেন!`;
 }
 
 function getSafeInitial(name) {
@@ -249,7 +208,6 @@ async function sendTelegramMessage(
     payload
   );
 
-  // Fallback without parse_mode if HTML fails
   if (!res.data?.ok) {
     console.error("sendMessage HTML failed, retrying plain text:", res.data);
     delete payload.parse_mode;
@@ -357,8 +315,6 @@ async function addFirebaseHistory(userId, entry) {
 
 async function handleMessage(msg) {
   if (!msg || !msg.from || !msg.chat) return;
-
-  // Only reply in private chats with the bot
   if (msg.chat.type && msg.chat.type !== "private") return;
 
   const chatId = msg.chat.id;
@@ -518,7 +474,6 @@ async function handleMessage(msg) {
           }
         );
 
-        // 1. Send referral notification to Referrer with Mini App buttons
         await sendTelegramMessage(
           referrerId,
           `🎉 <b>অভিনন্দন! নতুন রেফারেল জয়েন করেছে!</b>\n\n` +
@@ -531,7 +486,6 @@ async function handleMessage(msg) {
           getMiniAppButtons()
         );
 
-        // 2. Send referral welcome notification to New User with Mini App buttons
         await sendTelegramMessage(
           chatId,
           `🎉 <b>অভিনন্দন ${safeName}! রেফারেল জয়েন সফল হয়েছে! 📸💸</b>\n\n` +
@@ -545,7 +499,6 @@ async function handleMessage(msg) {
       }
     }
 
-    // If the new user sent a specific question (not "/start"), also answer their question via AI
     if (text && !text.startsWith("/start")) {
       const aiReply = await generatePhotoCashAiReply(text, firstName);
       await sendTelegramMessage(chatId, escapeHtml(aiReply), getMiniAppButtons());
@@ -554,10 +507,7 @@ async function handleMessage(msg) {
   }
 
   // EXISTING USER:
-  if (
-    text.startsWith("/verify") ||
-    text.startsWith("/start")
-  ) {
+  if (text.startsWith("/verify") || text.startsWith("/start")) {
     const channels = ["jgjghjghh687", "Earning_Money_Lob"];
     let allJoined = true;
     for (const ch of channels) {
@@ -600,15 +550,8 @@ async function handleMessage(msg) {
           `Photo cash ব্যবহারের জন্য নিচের ২টি চ্যানেলে জয়েন করুন:\n\n` +
           `1️⃣ <b>Main Channel:</b> @jgjghjghh687\n` +
           `2️⃣ <b>Support Channel:</b> @Earning_Money_Lob\n\n` +
-          `জয়েন করার পর নিচের <b>"✅ ভেরিফাই করুন"</b> বাটনে চাপুন:`,
-        {
-          inline_keyboard: [
-            [{ text: "📢 1. Join Main Channel", url: "https://t.me/jgjghjghh687" }],
-            [{ text: "📢 2. Join Support Channel", url: "https://t.me/Earning_Money_Lob" }],
-            [{ text: "✅ ভেরিফাই করুন (Verify Membership)", callback_data: "verify_channels" }],
-            [{ text: "📸 Open Photo cash App", web_app: { url: WEB_APP_URL } }],
-          ],
-        }
+          `জয়েন করার পর মিনি অ্যাপ ওপেন করুন 👇`,
+        getMiniAppButtons()
       );
     }
     return;
@@ -824,5 +767,4 @@ export function startBotDaemon() {
   pollUpdates();
 }
 
-// Auto-start when run directly (`node bot-daemon.js`) or imported
 startBotDaemon();
