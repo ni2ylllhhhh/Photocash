@@ -64,6 +64,36 @@ function saveStarSessionToStorage(session: StarSession) {
   } catch {}
 }
 
+/**
+ * Opens the ad URL outside the Telegram Mini App in Chrome / external system browser
+ */
+function openInExternalBrowser(url: string) {
+  try {
+    const tg = (window as any)?.Telegram?.WebApp;
+    if (tg && typeof tg.openLink === "function") {
+      tg.openLink(url, { try_instant_view: false });
+      return;
+    }
+  } catch {}
+
+  try {
+    const win = window.open(url, "_blank", "noopener,noreferrer");
+    if (win) return;
+  } catch {}
+
+  try {
+    const a = document.createElement("a");
+    a.href = url;
+    a.target = "_blank";
+    a.rel = "noopener noreferrer";
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+  } catch {
+    window.location.href = url;
+  }
+}
+
 export function StarRewardProvider({ children }: { children: React.ReactNode }) {
   const { settings } = useSettings();
   const { user } = useUser();
@@ -74,8 +104,6 @@ export function StarRewardProvider({ children }: { children: React.ReactNode }) 
     message: string;
   } | null>(null);
 
-  // Tracks if the session was started in this exact JS memory instance and hasn't left the page yet
-  const waitingForPageLeaveRef = useRef(false);
   const isProcessingRef = useRef(false);
   const noticeTimerRef = useRef<number | null>(null);
 
@@ -97,7 +125,6 @@ export function StarRewardProvider({ children }: { children: React.ReactNode }) 
   // 100% Guaranteed Star Count & +0.01 USDT Post Owner Balance Credit (REST + Firebase SDK)
   const awardStar = useCallback(
     async (postId: string, explicitAuthorId?: string) => {
-      // Show immediate top success notification
       showTopNotice(
         "success",
         "⭐ ১টি স্টার যোগ হয়েছে! (+0.01 USDT পোস্টের মূল ব্যালেন্সে যোগ হয়েছে)"
@@ -106,7 +133,6 @@ export function StarRewardProvider({ children }: { children: React.ReactNode }) 
       let authorId = explicitAuthorId || "";
 
       try {
-        // 1. Fetch current post via fast HTTP REST so bfcache/WebSocket reconnect never delays counting
         const postRes = await fetch(`${CONTENT_DB_URL}/posts/${encodeURIComponent(postId)}.json`);
         const postData = postRes.ok ? await postRes.json() : null;
 
@@ -122,14 +148,12 @@ export function StarRewardProvider({ children }: { children: React.ReactNode }) 
               : 0;
           const nextStars = currentStars + 1;
 
-          // Update via REST
           await fetch(`${CONTENT_DB_URL}/posts/${encodeURIComponent(postId)}.json`, {
             method: "PATCH",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ starsCount: nextStars, stars: nextStars }),
           });
 
-          // Also sync local Firebase SDK listener
           update(ref(contentDb, `posts/${postId}`), {
             starsCount: nextStars,
             stars: nextStars,
@@ -139,7 +163,7 @@ export function StarRewardProvider({ children }: { children: React.ReactNode }) 
         console.error("Error updating post star count:", err);
       }
 
-      // 2. Credit +0.01 USDT strictly to the post owner's (authorId) main balance
+      // Credit +0.01 USDT strictly to the post owner's (authorId) main balance
       if (authorId) {
         try {
           const userRes = await fetch(`${USER_DB_URL}/users/${encodeURIComponent(authorId)}.json`);
@@ -163,14 +187,12 @@ export function StarRewardProvider({ children }: { children: React.ReactNode }) 
               todayKey,
             };
 
-            // Update via REST
             await fetch(`${USER_DB_URL}/users/${encodeURIComponent(authorId)}.json`, {
               method: "PATCH",
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify(updates),
             });
 
-            // Sync local Firebase SDK listener
             update(ref(userDb, `users/${authorId}`), updates).catch(() => {});
 
             const historyEntry = {
@@ -199,16 +221,17 @@ export function StarRewardProvider({ children }: { children: React.ReactNode }) 
     [showTopNotice, user?.id]
   );
 
-  // Evaluate when the user comes back from https://ads.ziniyaapu7.workers.dev/
+  // Evaluate when the user comes back from Chrome / external browser to the Mini App
   const evaluateReturn = useCallback(() => {
-    // Do not evaluate if the user just clicked Star and the browser hasn't left the page yet
-    if (waitingForPageLeaveRef.current || isProcessingRef.current) return;
+    if (isProcessingRef.current) return;
 
     const session = readSavedStarSession();
     if (!session) return;
 
     const elapsed = Math.floor((Date.now() - session.startedAt) / 1000);
-    if (elapsed < 1) return;
+
+    // 3-second grace period while Chrome / external browser is launching
+    if (elapsed < 3) return;
 
     // Immediately consume the session so it only triggers once per Star click
     isProcessingRef.current = true;
@@ -236,48 +259,36 @@ export function StarRewardProvider({ children }: { children: React.ReactNode }) 
   }, [awardStar, showTopNotice]);
 
   useEffect(() => {
-    // If page loaded fresh when pressing Back from external site, waitingForPageLeaveRef is false -> evaluate immediately!
     evaluateReturn();
 
-    const markPageLeft = () => {
-      waitingForPageLeaveRef.current = false;
-    };
-
-    const onPageShow = () => {
-      waitingForPageLeaveRef.current = false;
-      evaluateReturn();
-    };
-
     const onVisibilityChange = () => {
-      if (document.visibilityState === "hidden") {
-        waitingForPageLeaveRef.current = false;
-      } else if (document.visibilityState === "visible") {
+      if (document.visibilityState === "visible") {
         evaluateReturn();
       }
     };
 
-    const onFocus = () => {
-      if (!waitingForPageLeaveRef.current) {
+    const onReturnEvent = () => {
+      if (document.visibilityState === "visible") {
         evaluateReturn();
       }
     };
 
-    window.addEventListener("pagehide", markPageLeft);
-    window.addEventListener("blur", markPageLeft);
-    window.addEventListener("pageshow", onPageShow);
-    window.addEventListener("focus", onFocus);
+    window.addEventListener("pageshow", onReturnEvent);
+    window.addEventListener("focus", onReturnEvent);
+    window.addEventListener("pointerdown", onReturnEvent);
+    window.addEventListener("touchstart", onReturnEvent);
     document.addEventListener("visibilitychange", onVisibilityChange);
 
     return () => {
-      window.removeEventListener("pagehide", markPageLeft);
-      window.removeEventListener("blur", markPageLeft);
-      window.removeEventListener("pageshow", onPageShow);
-      window.removeEventListener("focus", onFocus);
+      window.removeEventListener("pageshow", onReturnEvent);
+      window.removeEventListener("focus", onReturnEvent);
+      window.removeEventListener("pointerdown", onReturnEvent);
+      window.removeEventListener("touchstart", onReturnEvent);
       document.removeEventListener("visibilitychange", onVisibilityChange);
     };
   }, [evaluateReturn]);
 
-  // Clicking Star saves the session and directly navigates to https://ads.ziniyaapu7.workers.dev/
+  // Clicking Star opens https://ads.ziniyaapu7.workers.dev/ outside the Mini App in Chrome / external browser
   const startStarSession = useCallback(
     (postId: string, authorName?: string, authorId?: string) => {
       const newSession: StarSession = {
@@ -287,12 +298,11 @@ export function StarRewardProvider({ children }: { children: React.ReactNode }) 
         startedAt: Date.now(),
       };
 
-      waitingForPageLeaveRef.current = true;
       saveStarSessionToStorage(newSession);
       setActiveSession(newSession);
 
-      // Directly navigate to https://ads.ziniyaapu7.workers.dev/
-      window.location.href = starAdUrl;
+      // Open outside Mini Web App in Chrome / external browser
+      openInExternalBrowser(starAdUrl);
     },
     [starAdUrl]
   );
@@ -303,12 +313,11 @@ export function StarRewardProvider({ children }: { children: React.ReactNode }) 
   }, []);
 
   const verifySession = useCallback(() => {
-    waitingForPageLeaveRef.current = false;
     evaluateReturn();
   }, [evaluateReturn]);
 
   const reopenAdLink = useCallback(() => {
-    window.location.href = starAdUrl;
+    openInExternalBrowser(starAdUrl);
   }, [starAdUrl]);
 
   return (
@@ -323,7 +332,7 @@ export function StarRewardProvider({ children }: { children: React.ReactNode }) 
     >
       {children}
 
-      {/* Compact Top Notification Banner (No blocking full-screen modal) */}
+      {/* Compact Top Notification Banner */}
       {topNotice && (
         <div className="fixed top-2.5 left-0 right-0 z-[9999] mx-auto max-w-[400px] px-3 pointer-events-auto">
           <div
