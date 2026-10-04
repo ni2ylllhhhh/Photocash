@@ -1,6 +1,6 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
-import { ref, push, set, runTransaction } from "firebase/database";
+import { ref, push, set, runTransaction, onValue } from "firebase/database";
 import { userDb } from "../firebase";
 import { useUser } from "../context/UserContext";
 import { useSettings } from "../context/SettingsContext";
@@ -8,9 +8,10 @@ import { LayoutShell } from "../components/Navigation";
 import { formatUSDT, sendTelegramBotMessage, escapeHtml } from "../utils";
 import { resolveBotToken } from "../utils/tokenVault";
 import { ArrowLeft, Check, Info, ArrowUpRight } from "lucide-react";
-import { User, BKASH_LOGO_URL, NAGAD_LOGO_URL, BINANCE_LOGO_URL } from "../types";
+import { User, Withdrawal, BKASH_LOGO_URL, NAGAD_LOGO_URL, BINANCE_LOGO_URL } from "../types";
 
 const AMOUNTS = [5, 10, 15, 30, 60, 100];
+const SUBSEQUENT_WITHDRAW_REFERRALS = 5;
 
 type PaymentMethod = "bkash" | "nagad" | "binance";
 
@@ -111,13 +112,39 @@ export function CashOutPage() {
   );
   const [submitting, setSubmitting] = useState(false);
   const [submitted, setSubmitted] = useState(false);
+  const [validWithdrawCount, setValidWithdrawCount] = useState(0);
+
+  useEffect(() => {
+    if (!user?.id) return;
+    const wRef = ref(userDb, "withdrawals");
+    const unsubscribe = onValue(wRef, (snap) => {
+      const data = snap.val() || {};
+      const list: Withdrawal[] = Object.values(data);
+      const count = list.filter(
+        (w) => w.uid === user.id && w.status !== "rejected"
+      ).length;
+      setValidWithdrawCount(count);
+    });
+    return () => unsubscribe();
+  }, [user?.id]);
 
   const balance = user?.balance ?? 0;
   const referrals = user?.referrals ?? 0;
 
   const currentMethodObj = METHODS.find((m) => m.id === selectedMethod) || METHODS[0];
 
-  const minRequiredReferrals = settings.minReferrals || 15;
+  const firstMinRefs = settings.minReferrals || 15;
+  const isFirstWithdraw = validWithdrawCount === 0;
+  const minRequiredReferrals = isFirstWithdraw
+    ? firstMinRefs
+    : firstMinRefs + validWithdrawCount * SUBSEQUENT_WITHDRAW_REFERRALS;
+  const currentStepRefs = isFirstWithdraw
+    ? referrals
+    : Math.max(
+        0,
+        referrals -
+          (firstMinRefs + (validWithdrawCount - 1) * SUBSEQUENT_WITHDRAW_REFERRALS)
+      );
   const insufficientBalance = balance < Math.max(selectedAmount, settings.minWithdraw || 5);
   const insufficientReferrals = referrals < minRequiredReferrals;
   const invalidAccount = (() => {
@@ -355,7 +382,13 @@ export function CashOutPage() {
             />
             <CheckRow
               ok={!insufficientReferrals}
-              text={`${minRequiredReferrals}টা রেফারের প্রয়োজন ( আপনার আছে ${String(referrals).padStart(2, "0")} টা )`}
+              text={
+                isFirstWithdraw
+                  ? `প্রথমবার উইথড্র করতে ${firstMinRefs}টা রেফারের প্রয়োজন ( আপনার আছে ${String(referrals).padStart(2, "0")} টা )`
+                  : `পরবর্তী উইথড্র করতে ${SUBSEQUENT_WITHDRAW_REFERRALS}টা নতুন রেফারের প্রয়োজন ( নতুন রেফার ${String(
+                      Math.min(SUBSEQUENT_WITHDRAW_REFERRALS, currentStepRefs)
+                    ).padStart(2, "0")}/0${SUBSEQUENT_WITHDRAW_REFERRALS} টা • মোট ${referrals}/${minRequiredReferrals} টা )`
+              }
             />
             <CheckRow
               ok={!invalidAccount}
