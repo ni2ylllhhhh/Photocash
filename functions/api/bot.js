@@ -340,7 +340,7 @@ export async function onRequest(context) {
               text:
                 `👋 <b>স্বাগতম ${safeName}!</b>\n\n` +
                 `⚠️ <b>চ্যানেল ভেরিফিকেশন আবশ্যক:</b>\n` +
-                `PhotoCash ব্যবহারের জন্য আপনাকে অবশ্যই নিচের ২টি চ্যানেলে জয়েন হতে হবে:\n\n` +
+                `Photo cash ব্যবহারের জন্য আপনাকে অবশ্যই নিচের ২টি চ্যানেলে জয়েন হতে হবে:\n\n` +
                 `1️⃣ <b>Main Channel:</b> @jgjghjghh687\n` +
                 `2️⃣ <b>Support Channel:</b> @Earning_Money_Lob\n\n` +
                 `চ্যানেলে জয়েন করে নিচের <b>"✅ ভেরিফাই করুন"</b> বাটনে চাপুন।`,
@@ -349,7 +349,7 @@ export async function onRequest(context) {
                   [{ text: "📢 1. Join Main Channel", url: "https://t.me/jgjghjghh687" }],
                   [{ text: "📢 2. Join Support Channel", url: "https://t.me/Earning_Money_Lob" }],
                   [{ text: "✅ ভেরিফাই করুন (Verify Membership)", callback_data: "verify_channels" }],
-                  [{ text: "📸 Open PhotoCash App", web_app: { url: appLaunchUrl } }],
+                  [{ text: "📸 Open Photo cash App", web_app: { url: appLaunchUrl } }],
                 ],
               },
             }),
@@ -362,19 +362,43 @@ export async function onRequest(context) {
               chat_id: chatId,
               parse_mode: "HTML",
               text:
-                `👋 Welcome to <b>PhotoCash</b> 📸💸\n\n` +
+                `👋 Welcome to <b>Photo cash</b> 📸💸\n\n` +
                 `Hello <b>${safeName}</b>!\n` +
                 `আপনার চ্যানেল ভেরিফিকেশন অ্যাক্টিভ রয়েছে।\n` +
                 `ফটো আপলোড করে ইনকাম শুরু করতে নিচের বাটনে চাপুন 👇`,
               reply_markup: {
                 inline_keyboard: [
-                  [{ text: "📸 Open PhotoCash App", web_app: { url: appLaunchUrl } }],
-                  [{ text: "💬 Support Community", url: "https://t.me/Click2Cash_Site" }],
+                  [{ text: "📸 Open Photo cash App", web_app: { url: appLaunchUrl } }],
+                  [
+                    { text: "🌐 মিনি ওয়েবসাইট", url: WEB_APP_URL },
+                    { text: "💸 পেমেন্ট প্রুফ অটো সিস্টেম", url: "https://t.me/Earning_Money_Lob" },
+                  ],
                 ],
               },
             }),
           });
         }
+      } else {
+        // AI CHATBOT REPLY FOR ANY GENERAL MESSAGE OR QUESTION
+        const aiReply = generatePhotoCashSmartReply(text, firstName);
+        await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            chat_id: chatId,
+            parse_mode: "HTML",
+            text: escapeHtml(aiReply),
+            reply_markup: {
+              inline_keyboard: [
+                [{ text: "📸 Open Photo cash App", web_app: { url: WEB_APP_URL } }],
+                [
+                  { text: "🌐 মিনি ওয়েবসাইট", url: WEB_APP_URL },
+                  { text: "💸 পেমেন্ট প্রুফ অটো সিস্টেম", url: "https://t.me/Earning_Money_Lob" },
+                ],
+              ],
+            },
+          }),
+        });
       }
     }
 
@@ -382,6 +406,91 @@ export async function onRequest(context) {
   } catch (err) {
     return new Response("Error: " + err.message, { status: 500 });
   }
+}
+
+function generatePhotoCashSmartReply(userText, userName) {
+  const q = String(userText || "").trim().toLowerCase();
+
+  // 1. Why am I not getting payment? ("পেমেন্ট পাইতাছি না কেন")
+  if (
+    (q.includes("পেমেন্ট") || q.includes("টাকা") || q.includes("payment") || q.includes("withdraw") || q.includes("উইথড্র")) &&
+    (q.includes("পাইতাছি না") ||
+      q.includes("পাচ্ছি না") ||
+      q.includes("পাই না") ||
+      q.includes("আসে না") ||
+      q.includes("আসেনি") ||
+      q.includes("আসে নাই") ||
+      q.includes("পাইনি") ||
+      q.includes("দেন না") ||
+      q.includes("কেন") ||
+      q.includes("লেট") ||
+      q.includes("পেন্ডিং") ||
+      q.includes("pending"))
+  ) {
+    return (
+      `ওয়েবসাইটের মধ্যে ঢুইকা দেখো তুমি নাম্বার সব ঠিকঠাক দিছো কিনা! 🔍\n\n` +
+      `সঠিক এড্রেস না দিলে টাকা আসবে না। ভুল নাম্বার দিলে ভুল নাম্বারে টাকা চলে যাবে—এতে কর্তৃপক্ষের কোনো দায়ী নয়। তাই সঠিক নাম্বার দিন এবং চেক করুন। ✅`
+    );
+  }
+
+  // 2. Payment trust / proof questions
+  if (
+    q.includes("পেমেন্ট") ||
+    q.includes("payment") ||
+    q.includes("রিয়েল") ||
+    q.includes("রিয়েল") ||
+    q.includes("ফেক") ||
+    q.includes("real") ||
+    q.includes("fake") ||
+    q.includes("বিশ্বাস") ||
+    q.includes("প্রুফ") ||
+    q.includes("proof") ||
+    q.includes("টাকা দেয়") ||
+    q.includes("টাকা দেয়")
+  ) {
+    return (
+      `💯 ১০০% এখানে পেমেন্ট করে! Photo cash একদম রিয়েল ওয়েবসাইট, কখনো পেমেন্ট মিস করে না।\n\n` +
+      `আপনি চাইলে আমাদের পেমেন্ট প্রুফ অটো সিস্টেম দেখতে পারেন। নিচের বাটনে ক্লিক করে এখনি মিনি ওয়েবসাইট বা অ্যাপে যান! 🚀`
+    );
+  }
+
+  // 3. Detailed App / Website inquiry (up to 500 characters)
+  if (
+    q.includes("অ্যাপ") ||
+    q.includes("এপ") ||
+    q.includes("ওয়েবসাইট") ||
+    q.includes("ওয়েবসাইট") ||
+    q.includes("বিস্তারিত") ||
+    q.includes("ডিটেলস") ||
+    q.includes("কিভাবে") ||
+    q.includes("কাজ") ||
+    q.includes("ইনকাম") ||
+    q.includes("রেফার") ||
+    q.includes("নিয়ম") ||
+    q.includes("নিয়ম") ||
+    q.includes("সম্পর্কে") ||
+    q.includes("photo cash") ||
+    q.includes("photocash") ||
+    q.includes("details") ||
+    q.includes("about") ||
+    q.includes("how to") ||
+    q.includes("earn") ||
+    q.includes("income")
+  ) {
+    const detailed =
+      `📸 Photo cash একটি ১০০% রিয়েল ফটো শেয়ারিং ও আর্নিং মিনি ওয়েবসাইট!\n\n` +
+      `💰 ইনকামের উপায়:\n` +
+      `• ফটো আপলোড করে প্রতি ১০ মিনিটে বোনাস\n` +
+      `• পোস্টে স্টার (⭐) দিয়ে ১-৬ মিনিট ভিজিট করে আয়\n` +
+      `• প্রতি ১০ মিনিটে অটো প্যাসিভ ইনকাম\n` +
+      `• বন্ধুদের রেফার করে বোনাস ও ৩ লেভেল কমিশন (20%, 15%, 5%)\n\n` +
+      `🏦 সর্বনিম্ন $5 USDT হলেই বিকাশ, নগদ ও Binance-এ ১০০% গ্যারান্টিসহ পেমেন্ট! নিচের বাটনে টিপ দিয়ে অ্যাপে যান 👇`;
+    return detailed.slice(0, 500);
+  }
+
+  // 4. General message (strictly <= 120 characters)
+  const shortReply = `হ্যালো ${userName || "বন্ধু"}! 👋 Photo cash-এ স্বাগতম! ফটো আপলোড ও রেফার করে USDT আয় করতে নিচের বাটনে চাপুন 🚀`;
+  return shortReply.length > 120 ? shortReply.slice(0, 120) : shortReply;
 }
 
 function escapeHtml(str) {
