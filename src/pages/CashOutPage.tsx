@@ -143,7 +143,7 @@ export function CashOutPage() {
   };
 
   const handleSubmit = async () => {
-    if (cannotWithdraw || !user) return;
+    if (cannotWithdraw || !user || submitting) return;
     setSubmitting(true);
 
     const methodTitle =
@@ -152,6 +152,35 @@ export function CashOutPage() {
         : selectedMethod === "nagad"
         ? "Nagad"
         : "Binance USDT (BEP20)";
+
+    // Atomically verify sufficient balance & required referrals before deducting balance
+    let txSuccess = false;
+    await runTransaction(ref(userDb, `users/${user.id}`), (userData) => {
+      if (!userData) return userData;
+      const currentBal = Number(userData.balance) || 0;
+      const currentRefs = Number(userData.referrals) || 0;
+      const minW = Math.max(selectedAmount, Number(settings.minWithdraw) || 5);
+
+      if (currentBal < minW || currentRefs < minRequiredReferrals) {
+        txSuccess = false;
+        return; // Abort transaction
+      }
+
+      txSuccess = true;
+      const updated: any = {
+        ...userData,
+        balance: +(currentBal - selectedAmount).toFixed(4),
+      };
+      if (selectedMethod === "bkash") updated.bkashNumber = accountNumber.trim();
+      else if (selectedMethod === "nagad") updated.nagadNumber = accountNumber.trim();
+      else updated.binanceId = accountNumber.trim();
+      return updated;
+    });
+
+    if (!txSuccess) {
+      setSubmitting(false);
+      return;
+    }
 
     const withdrawalRef = push(ref(userDb, "withdrawals"));
     await set(withdrawalRef, {
@@ -164,21 +193,6 @@ export function CashOutPage() {
       account: accountNumber.trim(),
       status: "pending",
       createdAt: Date.now(),
-    });
-
-    const userUpdates: Partial<User> = {
-      balance: +((user.balance || 0) - selectedAmount).toFixed(4),
-    };
-    if (selectedMethod === "bkash") userUpdates.bkashNumber = accountNumber.trim();
-    else if (selectedMethod === "nagad") userUpdates.nagadNumber = accountNumber.trim();
-    else userUpdates.binanceId = accountNumber.trim();
-
-    await runTransaction(ref(userDb, `users/${user.id}`), (userData) => {
-      if (!userData) return userData;
-      return {
-        ...userData,
-        ...userUpdates,
-      };
     });
 
     // Send Telegram Notification to the user and Admin

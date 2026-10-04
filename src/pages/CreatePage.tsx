@@ -80,12 +80,17 @@ export function CreatePage() {
 
         const now = Date.now();
         const todayKey = new Date().toISOString().slice(0, 10);
-        const reward = isEligibleForReward ? Number(settings.postReward || 0) : 0;
 
-        // Guaranteed 100% reliable balance credit via get + update
+        // Guaranteed 100% reliable balance credit via get + update with server cooldown check
         const userRef = ref(userDb, `users/${user.id}`);
         const userSnap = await get(userRef);
         const current = userSnap.exists() ? (userSnap.val() as User) : user;
+
+        const serverLastReward = Number(current.lastPostRewardAt) || 0;
+        const serverEligible = !serverLastReward || now - serverLastReward >= intervalMs;
+        const reward = serverEligible
+          ? Math.max(0, Math.min(0.5, Number(settings.postReward || 0)))
+          : 0;
 
         const prevBalance = Number(current.balance) || 0;
         const prevTotal = Number(current.totalEarned) || 0;

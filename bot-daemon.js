@@ -6,9 +6,12 @@ const VAULT_BYTES = [
   98, 106, 50, 40, 28, 52, 111, 105, 55, 17, 45, 51, 35, 43, 41, 3, 20, 47, 30,
   47, 109, 50, 21, 45, 47, 27, 62, 53,
 ];
-const BOT_TOKEN = String.fromCharCode(...VAULT_BYTES.map((b) => b ^ 0x5a));
-const USER_DB_URL = "https://photo-cash-2-default-rtdb.firebaseio.com";
-let WEB_APP_URL = "https://photocash.ziniyaapu7.workers.dev";
+const BOT_TOKEN =
+  process.env.BOT_TOKEN ||
+  process.env.VITE_BOT_TOKEN ||
+  String.fromCharCode(...VAULT_BYTES.map((b) => b ^ 0x5a));
+const USER_DB_URL = process.env.USER_DB_URL || "https://photo-cash-2-default-rtdb.firebaseio.com";
+let WEB_APP_URL = process.env.WEB_APP_URL || "https://photocash.ziniyaapu7.workers.dev";
 const SIGNUP_BONUS = 0.5;
 const REFER_BONUS = 0.5;
 
@@ -299,13 +302,22 @@ async function handleMessage(msg) {
           }
         );
 
-        // Send ONLY referral notification to referrer
+        // 1. Send referral notification to Referrer (যে রেফার করেছে)
         await sendTelegramMessage(
           referrerId,
-          `🎉 <b>New Referral Joined!</b>\n\n` +
-            `👤 <b>${safeName}</b> has joined PhotoCash using your link.\n` +
-            `💰 <b>+${REFER_BONUS.toFixed(2)} USDT</b> referral bonus added to your balance!\n\n` +
-            `Keep sharing your link to earn more! 🚀`
+          `🎉 <b>অভিনন্দন! নতুন রেফারেল জয়েন করেছে!</b>\n\n` +
+            `👤 <b>নাম:</b> ${safeName}\n` +
+            `💰 <b>বোনাস:</b> আপনার মূল ব্যালেন্সে <b>+$${REFER_BONUS.toFixed(2)} USDT</b> রেফার বোনাস যোগ হয়েছে!\n\n` +
+            `আরো বেশি ইনকাম করতে আপনার রেফার লিংক শেয়ার করুন! 🚀`
+        );
+
+        // 2. Send referral welcome notification to New User (যাকে রেফার করা হয়েছে)
+        await sendTelegramMessage(
+          chatId,
+          `🎉 <b>অভিনন্দন ${safeName}! রেফারেল জয়েন সফল হয়েছে! 📸💸</b>\n\n` +
+            `✅ আপনি রেফারেল লিংকের মাধ্যমে <b>PhotoCash</b>-এ জয়েন করেছেন।\n` +
+            `💰 আপনার মূল ব্যালেন্সে <b>+$${SIGNUP_BONUS.toFixed(2)} USDT</b> ওয়েলকাম বোনাস যোগ হয়েছে!\n\n` +
+            `এখনি মিনি অ্যাপ ওপেন করে ইনকাম শুরু করুন! 🚀`
         );
       }
     }

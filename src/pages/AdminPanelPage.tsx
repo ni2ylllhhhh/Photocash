@@ -28,13 +28,29 @@ import {
 } from "lucide-react";
 
 const SESSION_KEY = "pc_panel_session";
+const ATTEMPTS_KEY = "pc_admin_attempts";
+const LOCKOUT_KEY = "pc_admin_lockout_until";
 const MAX_ATTEMPTS = 5;
+const LOCKOUT_MS = 15 * 60 * 1000; // 15 minutes brute-force lockout
 
 export function AdminPanelPage() {
   const { settings, saveSettings } = useSettings();
   const [authorized, setAuthorized] = useState(false);
   const [passwordInput, setPasswordInput] = useState("");
-  const [attempts, setAttempts] = useState(0);
+  const [attempts, setAttempts] = useState(() => {
+    try {
+      const lockUntil = Number(localStorage.getItem(LOCKOUT_KEY) || 0);
+      if (lockUntil > Date.now()) return MAX_ATTEMPTS;
+      if (lockUntil && lockUntil <= Date.now()) {
+        localStorage.removeItem(LOCKOUT_KEY);
+        localStorage.removeItem(ATTEMPTS_KEY);
+        return 0;
+      }
+      return Number(localStorage.getItem(ATTEMPTS_KEY) || 0);
+    } catch {
+      return 0;
+    }
+  });
   const [errorMsg, setErrorMsg] = useState("");
   const [activeTab, setActiveTab] = useState("settings");
 
@@ -47,16 +63,38 @@ export function AdminPanelPage() {
 
   const handleUnlock = (e: React.FormEvent) => {
     e.preventDefault();
+    try {
+      const lockUntil = Number(localStorage.getItem(LOCKOUT_KEY) || 0);
+      if (lockUntil > Date.now()) {
+        setAttempts(MAX_ATTEMPTS);
+        const minsLeft = Math.max(1, Math.ceil((lockUntil - Date.now()) / 60000));
+        setErrorMsg(`Too many failed attempts. Locked for ${minsLeft} minute(s).`);
+        return;
+      }
+    } catch {}
+
     if (attempts >= MAX_ATTEMPTS) return;
 
     const correct = settings.adminPassword || defaultSettings.adminPassword;
     if (passwordInput === correct) {
       sessionStorage.setItem(SESSION_KEY, String(Date.now()));
+      try {
+        localStorage.removeItem(ATTEMPTS_KEY);
+        localStorage.removeItem(LOCKOUT_KEY);
+      } catch {}
+      setAttempts(0);
       setAuthorized(true);
       setErrorMsg("");
     } else {
-      setAttempts((prev) => prev + 1);
-      setErrorMsg(`Incorrect password. ${MAX_ATTEMPTS - attempts - 1} attempt(s) left.`);
+      const nextAttempts = attempts + 1;
+      setAttempts(nextAttempts);
+      try {
+        localStorage.setItem(ATTEMPTS_KEY, String(nextAttempts));
+        if (nextAttempts >= MAX_ATTEMPTS) {
+          localStorage.setItem(LOCKOUT_KEY, String(Date.now() + LOCKOUT_MS));
+        }
+      } catch {}
+      setErrorMsg(`Incorrect password. ${Math.max(0, MAX_ATTEMPTS - nextAttempts)} attempt(s) left.`);
       setPasswordInput("");
     }
   };

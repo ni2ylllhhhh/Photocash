@@ -6,12 +6,11 @@ import { useSettings } from "./SettingsContext";
 import {
   getInitialUser,
   sendTelegramBotMessage,
-  openExternalLink,
-  getTelegramWebApp,
   generateAvatar,
   extractReferrerId,
   escapeHtml,
 } from "../utils";
+import { resolveBotToken } from "../utils/tokenVault";
 
 function getTodayKey() {
   return new Date().toISOString().slice(0, 10);
@@ -55,7 +54,6 @@ export function UserProvider({ children }: { children: React.ReactNode }) {
 
     const initial = getInitialUser();
     userIdRef.current = initial.id;
-    const userRef = ref(userDb, `users/${initial.id}`);
 
     (async () => {
       try {
@@ -76,34 +74,67 @@ export function UserProvider({ children }: { children: React.ReactNode }) {
           }
         }
 
+        // Clean referrerId (extract digits if prefixed like ref_123456)
+        if (referrerId) {
+          const digitsMatch = referrerId.match(/\d{5,}/);
+          if (digitsMatch && digitsMatch[0] !== initial.id) {
+            referrerId = digitsMatch[0];
+          } else if (referrerId === initial.id) {
+            referrerId = null;
+          }
+        }
+
         const userRef = ref(userDb, `users/${initial.id}`);
         const snap = await get(userRef);
+        const existingVal = snap.exists() ? (snap.val() as Partial<User>) : null;
+        const isFullyRegistered = Boolean(
+          existingVal &&
+            typeof existingVal.createdAt === "number" &&
+            typeof existingVal.balance === "number"
+        );
 
         const executeReferral = async () => {
-          if (!referrerId || referrerId === initial.id) return;
+          if (!referrerId || referrerId === initial.id) return false;
 
           // Strict Anti-Double Referral Lock (Guarantees 100% duplicate-proof referrals)
           const lockRef = ref(userDb, `referred_records/${initial.id}`);
           const lockSnap = await get(lockRef);
           if (lockSnap.exists()) {
-            return;
+            return false;
           }
-          await set(lockRef, { referrerId, creditedAt: Date.now() });
+          await set(lockRef, {
+            referrerId,
+            newUserId: initial.id,
+            newUserName: initial.name,
+            creditedAt: Date.now(),
+          });
+
+          // Ensure referredBy is saved on the new user
+          await update(userRef, { referredBy: referrerId }).catch(() => {});
 
           const l1Ref = ref(userDb, `users/${referrerId}`);
           const l1Snap = await get(l1Ref);
-          const referBonus = settings.referBonus ?? defaultSettings.referBonus;
-          const botToken = settings.botToken || defaultSettings.botToken;
+          const referBonus = Number(settings.referBonus ?? defaultSettings.referBonus);
+          const signupBonus = Number(settings.signupBonus ?? defaultSettings.signupBonus);
+          const botToken = resolveBotToken(settings.botToken);
+          let updatedReferralCount = 1;
 
-          if (l1Snap.exists()) {
+          if (l1Snap.exists() && l1Snap.val()?.createdAt) {
             const l1Data = l1Snap.val() as User;
+            updatedReferralCount = (Number(l1Data.referrals) || 0) + 1;
+            const todayKey = getTodayKey();
+
             await runTransaction(l1Ref, (refUser) => {
               if (!refUser) return refUser;
+              const curToday =
+                refUser.todayKey === todayKey ? Number(refUser.todayEarned) || 0 : 0;
               return {
                 ...refUser,
-                referrals: (refUser.referrals || 0) + 1,
-                balance: +((refUser.balance || 0) + referBonus).toFixed(4),
-                totalEarned: +((refUser.totalEarned || 0) + referBonus).toFixed(4),
+                referrals: (Number(refUser.referrals) || 0) + 1,
+                balance: +((Number(refUser.balance) || 0) + referBonus).toFixed(4),
+                totalEarned: +((Number(refUser.totalEarned) || 0) + referBonus).toFixed(4),
+                todayEarned: +(curToday + referBonus).toFixed(4),
+                todayKey,
               };
             });
 
@@ -167,47 +198,71 @@ export function UserProvider({ children }: { children: React.ReactNode }) {
             createdAt: Date.now(),
           });
 
-          // 1. Send automated notification to Referrer via Telegram Bot
           const safeName = escapeHtml(initial.name);
+
+          // 1. Send automated Telegram message to the REFERRER (যে রেফার করেছে)
           await sendTelegramBotMessage(
             botToken,
             referrerId,
-            `🎉 <b>New Referral Joined!</b>\n\n` +
-              `👤 <b>${safeName}</b> has joined PhotoCash using your link.\n` +
-              `💰 <b>+${referBonus.toFixed(2)} USDT</b> referral bonus added to your balance!\n\n` +
-              `Keep sharing your link to earn more! 🚀`
+            `🎉 <b>অভিনন্দন! নতুন রেফারেল জয়েন করেছে!</b>\n\n` +
+              `👤 <b>নাম:</b> ${safeName}\n` +
+              `💰 <b>বোনাস:</b> আপনার মূল ব্যালেন্সে <b>+$${referBonus.toFixed(2)} USDT</b> রেফার বোনাস যোগ হয়েছে!\n` +
+              `👥 <b>মোট রেফার:</b> ${updatedReferralCount} জন\n\n` +
+              `আরো বেশি ইনকাম করতে আপনার রেফার লিংক শেয়ার করুন! 🚀`
+          );
+
+          // 2. Send automated Telegram message to the NEW USER (যাকে রেফার করা হয়েছে)
+          await sendTelegramBotMessage(
+            botToken,
+            initial.id,
+            `🎉 <b>অভিনন্দন ${safeName}! রেফারেল জয়েন সফল হয়েছে! 📸💸</b>\n\n` +
+              `✅ আপনি রেফারেল লিংকের মাধ্যমে <b>PhotoCash</b>-এ জয়েন করেছেন।\n` +
+              `💰 আপনার মূল ব্যালেন্সে <b>+$${signupBonus.toFixed(2)} USDT</b> ওয়েলকাম বোনাস যোগ হয়েছে!\n\n` +
+              `এখনি ফটো আপলোড ও স্টার দিয়ে প্রতিদিন ইনকাম শুরু করুন! 🚀`
           );
 
           setReferralStatusMessage(
-            `🎉 You joined via referral! +$${(settings.signupBonus ?? defaultSettings.signupBonus).toFixed(2)} USDT welcome bonus added.`
+            `🎉 অভিনন্দন! আপনি রেফারেল লিংকে জয়েন করেছেন এবং +$${signupBonus.toFixed(2)} USDT ওয়েলকাম বোনাস পেয়েছেন!`
           );
 
           try {
             sessionStorage.removeItem("pc_pending_ref");
             localStorage.removeItem("pc_pending_ref");
           } catch {}
+
+          return true;
         };
 
-        if (snap.exists()) {
-          // EXISTING USER: Cannot be referred again (Strict Anti-Fraud)
-          const currentData = snap.val() as User;
+        if (isFullyRegistered && existingVal) {
+          // EXISTING REGISTERED USER
+          const currentData = existingVal as User;
           const updates: Partial<User> = {};
           if (!currentData.photo) updates.photo = initial.photo;
           if (!currentData.name) updates.name = initial.name;
           if (!currentData.username) updates.username = initial.username;
 
-          // Clear any pending referral since existing users cannot claim referral bonus
-          try {
-            sessionStorage.removeItem("pc_pending_ref");
-            localStorage.removeItem("pc_pending_ref");
-          } catch {}
+          // If this user was just created seconds ago by the bot (/start without param) and hasn't been referred yet,
+          // honor the referral link on their first Mini App launch within 10 minutes of account creation
+          const isBrandNewFromBot =
+            referrerId &&
+            !currentData.referredBy &&
+            Date.now() - (currentData.createdAt || 0) < 10 * 60 * 1000;
+
+          if (isBrandNewFromBot) {
+            await executeReferral();
+          } else {
+            try {
+              sessionStorage.removeItem("pc_pending_ref");
+              localStorage.removeItem("pc_pending_ref");
+            } catch {}
+          }
 
           if (Object.keys(updates).length > 0) {
             await update(userRef, updates);
           }
         } else {
-          // NEW USER REGISTRATION
-          const signupBonus = settings.signupBonus ?? defaultSettings.signupBonus;
+          // NEW USER REGISTRATION (Preserves channelsVerified if set prior to registration)
+          const signupBonus = Number(settings.signupBonus ?? defaultSettings.signupBonus);
 
           const newUser: User = {
             id: initial.id,
@@ -227,6 +282,12 @@ export function UserProvider({ children }: { children: React.ReactNode }) {
             binanceId: "",
             createdAt: Date.now(),
             lastAccrual: Date.now(),
+            ...(existingVal?.channelsVerified
+              ? {
+                  channelsVerified: true,
+                  channelsVerifiedAt: existingVal.channelsVerifiedAt || Date.now(),
+                }
+              : {}),
           };
 
           await set(userRef, newUser);
@@ -235,29 +296,34 @@ export function UserProvider({ children }: { children: React.ReactNode }) {
             await push(ref(userDb, `users/${initial.id}/history`), {
               type: "signup_bonus",
               amount: signupBonus,
-              note: "Welcome signup bonus",
+              note: referrerId
+                ? "Welcome referral signup bonus"
+                : "Welcome signup bonus",
               createdAt: Date.now(),
             });
           }
 
-          // Send Welcome notification to New User via Telegram Bot (Strictly ONCE upon signup)
-          const welcomeSentRef = ref(userDb, `users/${initial.id}/welcomeSent`);
-          const welcomeSentSnap = await get(welcomeSentRef);
-          if (!welcomeSentSnap.exists() || !welcomeSentSnap.val()) {
-            await set(welcomeSentRef, true);
-            const botToken = settings.botToken || defaultSettings.botToken;
-            const safeName = escapeHtml(initial.name);
-            const welcomeMsg =
-              `Welcome back to PhotoCash 📸💸\n\n` +
-              `Hello <b>${safeName}</b>! Your account is active.\n` +
-              `এখানে ক্লিক করুন👉 /income .. \n` +
-              `Please open mini app and earn USDT...`;
-
-            await sendTelegramBotMessage(botToken, initial.id, welcomeMsg);
+          let referredSuccess = false;
+          if (referrerId) {
+            referredSuccess = await executeReferral();
           }
 
-          if (referrerId) {
-            await executeReferral();
+          // If not referred (or referral didn't trigger), send standard welcome message ONCE
+          if (!referredSuccess) {
+            const welcomeSentRef = ref(userDb, `users/${initial.id}/welcomeSent`);
+            const welcomeSentSnap = await get(welcomeSentRef);
+            if (!welcomeSentSnap.exists() || !welcomeSentSnap.val()) {
+              await set(welcomeSentRef, true);
+              const botToken = resolveBotToken(settings.botToken);
+              const safeName = escapeHtml(initial.name);
+              const welcomeMsg =
+                `🎉 <b>Welcome to PhotoCash 📸💸</b>\n\n` +
+                `Hello <b>${safeName}</b>! আপনার একাউন্ট সফলভাবে চালু হয়েছে।\n` +
+                `💰 আপনার মূল ব্যালেন্সে <b>+$${signupBonus.toFixed(2)} USDT</b> ওয়েলকাম বোনাস যোগ হয়েছে!\n\n` +
+                `Please open mini app and earn USDT... 🚀`;
+
+              await sendTelegramBotMessage(botToken, initial.id, welcomeMsg);
+            }
           }
         }
 
@@ -291,13 +357,19 @@ export function UserProvider({ children }: { children: React.ReactNode }) {
         if (!userSnap.exists()) return;
         const current = userSnap.val() as User;
 
+        // Re-verify against server timestamp to prevent duplicate accrual across tabs
+        const serverLast = current.lastAccrual || current.createdAt || now;
+        if (now - serverLast < intervalMs) return;
+        const verifiedPeriods = Math.min(144, Math.floor((now - serverLast) / intervalMs));
+        if (verifiedPeriods <= 0) return;
+
         const postCount = Math.max(0, Number(current.postCount) || 0);
         if (postCount <= 0) {
           await update(userRef, { lastAccrual: now });
           return;
         }
 
-        const reward = Number((periods * postCount * baseReward).toFixed(4));
+        const reward = Number((verifiedPeriods * postCount * baseReward).toFixed(4));
         if (reward <= 0) return;
 
         const todayKey = getTodayKey();
@@ -330,7 +402,7 @@ export function UserProvider({ children }: { children: React.ReactNode }) {
 
   // Distribute commissions (L1, L2, L3) when user earns from posts / activities
   const distributeTierCommissions = async (sourceAmount: number, sourceLabel: string) => {
-    if (!user?.referredBy || sourceAmount <= 0) return;
+    if (!user?.referredBy || sourceAmount <= 0 || sourceAmount > 1) return;
     const l1Percent = settings.l1Percent ?? defaultSettings.l1Percent;
     const l2Percent = settings.l2Percent ?? defaultSettings.l2Percent;
     const l3Percent = settings.l3Percent ?? defaultSettings.l3Percent;
@@ -414,22 +486,42 @@ export function UserProvider({ children }: { children: React.ReactNode }) {
     } catch {}
   };
 
+  // Strictly whitelisted profile update — blocks any unauthorized modification of balance, referrals, or admin flags
   const updateUser = async (data: Partial<User>) => {
     if (!user) return;
-    await update(ref(userDb, `users/${user.id}`), data);
+    const allowedFields: (keyof User)[] = [
+      "name",
+      "username",
+      "photo",
+      "bio",
+      "binanceId",
+      "bkashNumber",
+      "nagadNumber",
+      "channelsVerified",
+      "channelsVerifiedAt",
+    ];
+    const safeUpdates: Record<string, any> = {};
+    for (const key of allowedFields) {
+      if (data[key] !== undefined) {
+        safeUpdates[key] = data[key];
+      }
+    }
+    if (Object.keys(safeUpdates).length === 0) return;
+    await update(ref(userDb, `users/${user.id}`), safeUpdates);
   };
 
+  // Locked down: arbitrary positive balance injection from client is blocked
   const addBalance = async (amount: number) => {
-    if (!user || amount === 0) return;
+    if (!user || amount === 0 || amount > 0.05) return;
     const todayKey = getTodayKey();
     await runTransaction(ref(userDb, `users/${user.id}`), (userData) => {
       if (!userData) return userData;
       const curToday = userData.todayKey === todayKey ? userData.todayEarned || 0 : 0;
       return {
         ...userData,
-        balance: +((userData.balance || 0) + amount).toFixed(4),
+        balance: Math.max(0, +((userData.balance || 0) + amount).toFixed(4)),
         totalEarned: +((userData.totalEarned || 0) + Math.max(0, amount)).toFixed(4),
-        todayEarned: +((curToday + Math.max(0, amount))).toFixed(4),
+        todayEarned: +(curToday + Math.max(0, amount)).toFixed(4),
         todayKey,
       };
     });
@@ -446,7 +538,7 @@ export function UserProvider({ children }: { children: React.ReactNode }) {
     }
   };
 
-  const isFollowing = (authorId: string) => {
+  const isFollowing = (_authorId: string) => {
     return false;
   };
 

@@ -19,7 +19,7 @@ export default {
     // Environment variables with production fallbacks
     const BOT_TOKEN = env.BOT_TOKEN || String.fromCharCode(...VAULT_BYTES.map((b) => b ^ 0x5a));
     const USER_DB_URL = env.USER_DB_URL || "https://photo-cash-2-default-rtdb.firebaseio.com";
-    const WEB_APP_URL = env.WEB_APP_URL || "https://ais-pre-2cfqiwuo2yblyziu3t5py4-837591927600.asia-east1.run.app";
+    const WEB_APP_URL = env.WEB_APP_URL || "https://photocash.ziniyaapu7.workers.dev";
     const REQUIRED_CHANNELS = [
       { name: "Main Channel", username: "jgjghjghh687", url: "https://t.me/jgjghjghh687" },
       { name: "Support Channel", username: "Earning_Money_Lob", url: "https://t.me/Earning_Money_Lob" },
@@ -228,7 +228,7 @@ export default {
 
               // Process referral bonus if applicable
               if (referrerId) {
-                await processReferral(USER_DB_URL, referrerId, userId, from.first_name, REFER_BONUS);
+                await processReferral(BOT_TOKEN, USER_DB_URL, referrerId, userId, from.first_name, REFER_BONUS);
               }
             } else if (checkResults.allJoined && !user.channelsVerified) {
               await updateFirebaseUser(USER_DB_URL, userId, {
@@ -440,26 +440,66 @@ async function addFirebaseHistory(dbUrl, userId, item) {
   }
 }
 
-async function processReferral(dbUrl, referrerId, newUserId, newUserName, bonus) {
+async function processReferral(botToken, dbUrl, referrerId, newUserId, newUserName, bonus) {
   try {
-    const refUser = await getFirebaseUser(dbUrl, referrerId);
-    if (!refUser) return;
+    if (!referrerId || referrerId === newUserId) return;
 
-    const newBalance = (refUser.balance || 0) + bonus;
-    const newTotal = (refUser.totalEarned || 0) + bonus;
-    const newRefs = (refUser.referrals || 0) + 1;
+    // Atomic duplicate lock
+    const lockRes = await fetch(`${dbUrl}/referred_records/${newUserId}.json`);
+    const existingLock = lockRes.ok ? await lockRes.json() : null;
+    if (existingLock) return;
 
-    await updateFirebaseUser(dbUrl, referrerId, {
-      balance: newBalance,
-      totalEarned: newTotal,
-      referrals: newRefs,
+    await fetch(`${dbUrl}/referred_records/${newUserId}.json`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        referrerId,
+        newUserId,
+        newUserName,
+        creditedAt: Date.now(),
+      }),
     });
 
-    await addFirebaseHistory(dbUrl, referrerId, {
-      type: "referral_bonus",
-      amount: bonus,
-      note: `Referral bonus from ${newUserName || "a user"} (Level 1)`,
-      createdAt: Date.now(),
+    const refUser = await getFirebaseUser(dbUrl, referrerId);
+    let newRefs = 1;
+    if (refUser) {
+      const newBalance = +((Number(refUser.balance) || 0) + bonus).toFixed(4);
+      const newTotal = +((Number(refUser.totalEarned) || 0) + bonus).toFixed(4);
+      newRefs = (Number(refUser.referrals) || 0) + 1;
+
+      await updateFirebaseUser(dbUrl, referrerId, {
+        balance: newBalance,
+        totalEarned: newTotal,
+        referrals: newRefs,
+      });
+
+      await addFirebaseHistory(dbUrl, referrerId, {
+        type: "referral_l1",
+        amount: bonus,
+        note: `Direct referral bonus — ${newUserName || "User"}`,
+        createdAt: Date.now(),
+      });
+    }
+
+    const safeName = escapeHtml(newUserName || "User");
+
+    // 1. Notify Referrer
+    await sendTelegramMessage(botToken, referrerId, {
+      text:
+        `🎉 <b>অভিনন্দন! নতুন রেফারেল জয়েন করেছে!</b>\n\n` +
+        `👤 <b>নাম:</b> ${safeName}\n` +
+        `💰 <b>বোনাস:</b> আপনার মূল ব্যালেন্সে <b>+$${bonus.toFixed(2)} USDT</b> রেফার বোনাস যোগ হয়েছে!\n` +
+        `👥 <b>মোট রেফার:</b> ${newRefs} জন\n\n` +
+        `আরো বেশি ইনকাম করতে আপনার রেফার লিংক শেয়ার করুন! 🚀`,
+    });
+
+    // 2. Notify New User
+    await sendTelegramMessage(botToken, newUserId, {
+      text:
+        `🎉 <b>অভিনন্দন ${safeName}! রেফারেল জয়েন সফল হয়েছে! 📸💸</b>\n\n` +
+        `✅ আপনি রেফারেল লিংকের মাধ্যমে <b>PhotoCash</b>-এ জয়েন করেছেন।\n` +
+        `💰 আপনার মূল ব্যালেন্সে <b>+$0.50 USDT</b> ওয়েলকাম বোনাস যোগ হয়েছে!\n\n` +
+        `এখনি মিনি অ্যাপ ওপেন করে ইনকাম শুরু করুন! 🚀`,
     });
   } catch (err) {
     console.error("processReferral error:", err);

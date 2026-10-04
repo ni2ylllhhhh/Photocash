@@ -1,4 +1,4 @@
-// Multi-layer XOR Encrypted Bot Token Vault
+// Multi-layer XOR Encrypted Bot Token Vault + Environment Variable Support
 // The raw token is never stored in plain text in source code, DOM, or Firebase.
 
 const VAULT_KEY = 0x5a;
@@ -14,6 +14,17 @@ const VAULT_BYTES = [
 const REVOKED_FRAGMENTS = ["AAFk8eHwv2xusw", "AAHQvVRZBjvT5a"];
 
 export function getDefaultBotToken(): string {
+  try {
+    const envToken =
+      (import.meta as any)?.env?.VITE_BOT_TOKEN ||
+      (import.meta as any)?.env?.BOT_TOKEN;
+    if (envToken && typeof envToken === "string" && envToken.trim().length > 20) {
+      const cleanEnv = sanitizeBotTokenInput(envToken);
+      if (/^\d{8,12}:[A-Za-z0-9_-]{30,45}$/.test(cleanEnv)) {
+        return cleanEnv;
+      }
+    }
+  } catch {}
   return String.fromCharCode(...VAULT_BYTES.map((b) => b ^ VAULT_KEY));
 }
 
