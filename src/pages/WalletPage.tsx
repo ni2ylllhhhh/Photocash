@@ -129,27 +129,13 @@ export function WalletPage() {
 
       <div className="mt-2 rounded-2xl border border-brand-pink/30 bg-brand-pink/5 p-3">
         {isFirstWithdraw ? (
-          <>
-            <p className="text-[12px] font-bold text-brand-pink">
-              🚨 প্রথমবার {firstMinRefs} রেফার না করলে withdraw হবে না
-            </p>
-            <p className="mt-1 text-[11px] leading-snug text-ink">
-              প্রথমবার Withdraw করতে সর্বনিম্ন <b>{formatUSDT(settings.minWithdraw, 2)} USDT</b> ও{" "}
-              <b>{firstMinRefs} টি রেফার</b> প্রয়োজন। এরপর থেকে প্রতিবার উইথড্র করতে মাত্র{" "}
-              <b>{SUBSEQUENT_WITHDRAW_REFERRALS} টি করে রেফার</b> প্রয়োজন হবে।
-            </p>
-          </>
+          <p className="text-[12px] font-bold text-brand-pink">
+            🚨 প্রথমবার {firstMinRefs} রেফার না করলে withdraw হবে না
+          </p>
         ) : (
-          <>
-            <p className="text-[12px] font-bold text-brand-pink">
-              🚨 পরবর্তী withdraw করতে মাত্র {SUBSEQUENT_WITHDRAW_REFERRALS} টি করে রেফার প্রয়োজন
-            </p>
-            <p className="mt-1 text-[11px] leading-snug text-ink">
-              প্রথমবার উইথড্র সম্পন্ন হয়েছে! এখন পরবর্তী Withdraw করতে সর্বনিম্ন{" "}
-              <b>{formatUSDT(settings.minWithdraw, 2)} USDT</b> ও{" "}
-              <b>{SUBSEQUENT_WITHDRAW_REFERRALS} টি নতুন রেফার</b> (মোট {requiredTotalReferrals} টি রেফার) প্রয়োজন।
-            </p>
-          </>
+          <p className="text-[12px] font-bold text-brand-pink">
+            🚨 পরবর্তী withdraw করতে মাত্র {SUBSEQUENT_WITHDRAW_REFERRALS} টি করে রেফার প্রয়োজন
+          </p>
         )}
       </div>
 
