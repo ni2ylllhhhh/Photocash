@@ -121,7 +121,7 @@ export function UserProvider({ children }: { children: React.ReactNode }) {
             newUserId: initial.id,
             newUserName: initial.name,
             creditedAt: Date.now(),
-            messageSent: false,
+            messageSent: true,
           });
 
           // Ensure referredBy is saved on the new user
@@ -215,8 +215,8 @@ export function UserProvider({ children }: { children: React.ReactNode }) {
 
           const safeName = escapeHtml(initial.name);
 
-          // 1. Send automated Telegram message to the REFERRER (যে রেফার করেছে)
-          const refMsgOk = await sendTelegramBotMessage(
+          // 1. Send automated Telegram message to the REFERRER (যে রেফার করেছে) - strictly ONCE
+          await sendTelegramBotMessage(
             botToken,
             referrerId,
             `🎉 <b>অভিনন্দন! নতুন রেফারেল জয়েন করেছে!</b>\n\n` +
@@ -226,7 +226,7 @@ export function UserProvider({ children }: { children: React.ReactNode }) {
               `আরো বেশি ইনকাম করতে আপনার রেফার লিংক শেয়ার করুন! 🚀`
           );
 
-          // 2. Send automated Telegram message to the NEW USER (যাকে রেফার করা হয়েছে)
+          // 2. Send automated Telegram message to the NEW USER (যাকে রেফার করা হয়েছে) - strictly ONCE
           await sendTelegramBotMessage(
             botToken,
             initial.id,
@@ -235,10 +235,6 @@ export function UserProvider({ children }: { children: React.ReactNode }) {
               `💰 আপনার মূল ব্যালেন্সে <b>+$${signupBonus.toFixed(2)} USDT</b> ওয়েলকাম বোনাস যোগ হয়েছে!\n\n` +
               `এখনি ফটো আপলোড ও স্টার দিয়ে প্রতিদিন ইনকাম শুরু করুন! 🚀`
           );
-
-          if (refMsgOk) {
-            await update(lockRef, { messageSent: true }).catch(() => {});
-          }
 
           setReferralStatusMessage(
             `🎉 অভিনন্দন! আপনি রেফারেল লিংকে জয়েন করেছেন এবং +$${signupBonus.toFixed(2)} USDT ওয়েলকাম বোনাস পেয়েছেন!`
@@ -270,37 +266,6 @@ export function UserProvider({ children }: { children: React.ReactNode }) {
           if (isBrandNewFromBot) {
             await executeReferral();
           } else {
-            // If user was referred earlier and referrer notification wasn't marked sent yet, send it now!
-            if (currentData.referredBy) {
-              const lockRef = ref(userDb, `referred_records/${initial.id}`);
-              const lockSnap = await get(lockRef);
-              const lockVal = lockSnap.exists() ? lockSnap.val() : null;
-              if (!lockVal || !lockVal.messageSent) {
-                const botToken = resolveBotToken(liveSettings.botToken);
-                const referBonus = Number(liveSettings.referBonus ?? defaultSettings.referBonus);
-                const l1Snap = await get(ref(userDb, `users/${currentData.referredBy}`));
-                const l1Refs = l1Snap.exists() ? Number(l1Snap.val()?.referrals) || 1 : 1;
-                const safeName = escapeHtml(currentData.name || initial.name);
-                const ok = await sendTelegramBotMessage(
-                  botToken,
-                  currentData.referredBy,
-                  `🎉 <b>অভিনন্দন! নতুন রেফারেল জয়েন করেছে!</b>\n\n` +
-                    `👤 <b>নাম:</b> ${safeName}\n` +
-                    `💰 <b>বোনাস:</b> আপনার মূল ব্যালেন্সে <b>+$${referBonus.toFixed(2)} USDT</b> রেফার বোনাস যোগ হয়েছে!\n` +
-                    `👥 <b>মোট রেফার:</b> ${l1Refs} জন\n\n` +
-                    `আরো বেশি ইনকাম করতে আপনার রেফার লিংক শেয়ার করুন! 🚀`
-                );
-                if (ok) {
-                  await set(lockRef, {
-                    referrerId: currentData.referredBy,
-                    newUserId: initial.id,
-                    newUserName: currentData.name || initial.name,
-                    creditedAt: lockVal?.creditedAt || Date.now(),
-                    messageSent: true,
-                  }).catch(() => {});
-                }
-              }
-            }
             try {
               sessionStorage.removeItem("pc_pending_ref");
               localStorage.removeItem("pc_pending_ref");

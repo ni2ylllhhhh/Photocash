@@ -350,7 +350,13 @@ async function handleMessage(msg) {
     }
   }
 
-  const rawUser = await getFirebaseUser(userId);
+  const [rawUser, settingsRes] = await Promise.all([
+    getFirebaseUser(userId),
+    httpsRequest("https://photo-cash-30b8c-default-rtdb.firebaseio.com/settings.json").catch(() => ({ data: null })),
+  ]);
+  const liveSettings = settingsRes?.data || {};
+  const liveSignupBonus = Number(liveSettings.signupBonus ?? SIGNUP_BONUS);
+  const liveReferBonus = Number(liveSettings.referBonus ?? REFER_BONUS);
   const existingUser =
     rawUser && typeof rawUser.createdAt === "number" ? rawUser : null;
 
@@ -366,9 +372,9 @@ async function handleMessage(msg) {
         firstName
       )}&background=f7841f&color=fff&size=128&bold=true`,
       bio: "",
-      balance: SIGNUP_BONUS,
-      totalEarned: SIGNUP_BONUS,
-      todayEarned: SIGNUP_BONUS,
+      balance: liveSignupBonus,
+      totalEarned: liveSignupBonus,
+      todayEarned: liveSignupBonus,
       todayKey: new Date().toISOString().slice(0, 10),
       postCount: 0,
       referrals: 0,
@@ -383,7 +389,7 @@ async function handleMessage(msg) {
     await createFirebaseUser(userId, newUser);
     await addFirebaseHistory(userId, {
       type: "signup_bonus",
-      amount: SIGNUP_BONUS,
+      amount: liveSignupBonus,
       note: "Welcome signup bonus",
       createdAt: Date.now(),
     });
@@ -430,8 +436,8 @@ async function handleMessage(msg) {
         const refUser = await getFirebaseUser(referrerId);
         let newCount = 1;
         if (refUser) {
-          const newBalance = +((refUser.balance || 0) + REFER_BONUS).toFixed(4);
-          const newTotal = +((refUser.totalEarned || 0) + REFER_BONUS).toFixed(4);
+          const newBalance = +((refUser.balance || 0) + liveReferBonus).toFixed(4);
+          const newTotal = +((refUser.totalEarned || 0) + liveReferBonus).toFixed(4);
           newCount = (refUser.referrals || 0) + 1;
 
           await updateFirebaseUser(referrerId, {
@@ -442,7 +448,7 @@ async function handleMessage(msg) {
 
           await addFirebaseHistory(referrerId, {
             type: "referral_l1",
-            amount: REFER_BONUS,
+            amount: liveReferBonus,
             note: `Direct referral bonus — ${firstName}`,
             createdAt: Date.now(),
           });
@@ -453,9 +459,9 @@ async function handleMessage(msg) {
             username: `user_${referrerId.slice(-4)}`,
             photo: `https://ui-avatars.com/api/?name=U&background=f7841f&color=fff&size=128&bold=true`,
             bio: "",
-            balance: REFER_BONUS,
-            totalEarned: REFER_BONUS,
-            todayEarned: REFER_BONUS,
+            balance: liveReferBonus,
+            totalEarned: liveReferBonus,
+            todayEarned: liveReferBonus,
             todayKey: new Date().toISOString().slice(0, 10),
             postCount: 0,
             referrals: 1,
@@ -467,7 +473,7 @@ async function handleMessage(msg) {
 
           await addFirebaseHistory(referrerId, {
             type: "referral_l1",
-            amount: REFER_BONUS,
+            amount: liveReferBonus,
             note: `Direct referral bonus — ${firstName}`,
             createdAt: Date.now(),
           });
@@ -489,7 +495,7 @@ async function handleMessage(msg) {
           referrerId,
           `🎉 <b>অভিনন্দন! নতুন রেফারেল জয়েন করেছে!</b>\n\n` +
             `👤 <b>নাম:</b> ${safeName}\n` +
-            `💰 <b>বোনাস:</b> আপনার মূল ব্যালেন্সে <b>+$${REFER_BONUS.toFixed(
+            `💰 <b>বোনাস:</b> আপনার মূল ব্যালেন্সে <b>+$${liveReferBonus.toFixed(
               2
             )} USDT</b> রেফার বোনাস যোগ হয়েছে!\n` +
             `👥 <b>মোট রেফার:</b> ${newCount} জন\n\n` +
@@ -500,11 +506,11 @@ async function handleMessage(msg) {
         await sendTelegramMessage(
           chatId,
           `🎉 <b>অভিনন্দন ${safeName}! রেফারেল জয়েন সফল হয়েছে! 📸💸</b>\n\n` +
-            `✅ আপনি রেফারেল লিংকের মাধ্যমে <b>Photo cash</b>-এ জয়েন করেছেন।\n` +
-            `💰 আপনার মূল ব্যালেন্সে <b>+$${SIGNUP_BONUS.toFixed(
+            `✅ আপনি রেফারেল লিংকের মাধ্যমে <b>PhotoCash</b>-এ জয়েন করেছেন।\n` +
+            `💰 আপনার মূল ব্যালেন্সে <b>+$${liveSignupBonus.toFixed(
               2
             )} USDT</b> ওয়েলকাম বোনাস যোগ হয়েছে!\n\n` +
-            `এখনি মিনি অ্যাপ ওপেন করে ইনকাম শুরু করুন! 🚀`,
+            `এখনি ফটো আপলোড ও স্টার দিয়ে প্রতিদিন ইনকাম শুরু করুন! 🚀`,
           getMiniAppButtons()
         );
       }
@@ -721,54 +727,10 @@ async function pollUpdates() {
   }
 }
 
-async function syncPendingReferralMessages() {
-  try {
-    const [refRes, settingsRes] = await Promise.all([
-      httpsRequest(`${USER_DB_URL}/referred_records.json`),
-      httpsRequest(
-        "https://photo-cash-30b8c-default-rtdb.firebaseio.com/settings.json"
-      ),
-    ]);
-    const records = refRes.data || {};
-    const liveSettings = settingsRes.data || {};
-    const referBonus = Number(liveSettings.referBonus ?? REFER_BONUS);
-
-    for (const [uid, rec] of Object.entries(records)) {
-      if (!rec || rec.messageSent || !rec.referrerId) continue;
-
-      await httpsRequest(
-        `${USER_DB_URL}/referred_records/${uid}.json`,
-        { method: "PATCH", headers: { "Content-Type": "application/json" } },
-        { messageSent: true }
-      );
-
-      const refUser = await getFirebaseUser(rec.referrerId);
-      const totalRefs = Number(refUser?.referrals) || 1;
-      const safeName = escapeHtml(rec.newUserName || "Telegram User");
-
-      await sendTelegramMessage(
-        rec.referrerId,
-        `🎉 <b>অভিনন্দন! নতুন রেফারেল জয়েন করেছে!</b>\n\n` +
-          `👤 <b>নাম:</b> ${safeName}\n` +
-          `💰 <b>বোনাস:</b> আপনার মূল ব্যালেন্সে <b>+$${referBonus.toFixed(
-            2
-          )} USDT</b> রেফার বোনাস যোগ হয়েছে!\n` +
-          `👥 <b>মোট রেফার:</b> ${totalRefs} জন\n\n` +
-          `আরো বেশি ইনকাম করতে আপনার রেফার লিংক শেয়ার করুন! 🚀`,
-        getMiniAppButtons()
-      );
-    }
-  } catch (err) {
-    console.error("syncPendingReferralMessages error:", err?.message);
-  }
-}
-
 export function startBotDaemon() {
   if (pollingActive) return;
   console.log("PhotoCash AI Telegram Bot Daemon starting...");
   setChatMenuButton();
-  syncPendingReferralMessages();
-  setInterval(syncPendingReferralMessages, 5000);
   pollUpdates();
 }
 
