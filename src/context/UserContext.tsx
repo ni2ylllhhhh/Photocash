@@ -1,7 +1,7 @@
 import React, { createContext, useContext, useEffect, useRef, useState } from "react";
 import { ref, get, set, update, onValue, runTransaction, push } from "firebase/database";
-import { userDb } from "../firebase";
-import { User, defaultSettings } from "../types";
+import { userDb, contentDb } from "../firebase";
+import { User, Settings, defaultSettings } from "../types";
 import { useSettings } from "./SettingsContext";
 import {
   getInitialUser,
@@ -85,7 +85,16 @@ export function UserProvider({ children }: { children: React.ReactNode }) {
         }
 
         const userRef = ref(userDb, `users/${initial.id}`);
-        const snap = await get(userRef);
+        const [snap, liveSettingsSnap] = await Promise.all([
+          get(userRef),
+          get(ref(contentDb, "settings")).catch(() => null),
+        ]);
+        const liveSettings: Settings = {
+          ...defaultSettings,
+          ...settings,
+          ...(liveSettingsSnap && liveSettingsSnap.exists() ? liveSettingsSnap.val() : {}),
+        };
+
         const existingVal = snap.exists() ? (snap.val() as Partial<User>) : null;
         const isFullyRegistered = Boolean(
           existingVal &&
@@ -96,17 +105,23 @@ export function UserProvider({ children }: { children: React.ReactNode }) {
         const executeReferral = async () => {
           if (!referrerId || referrerId === initial.id) return false;
 
-          // Strict Anti-Double Referral Lock (Guarantees 100% duplicate-proof referrals)
+          // Strict Anti-Double Referral Lock (Guarantees 100% duplicate-proof referrals,
+          // while allowing re-testing if a user was deleted from `users` over 60s ago)
           const lockRef = ref(userDb, `referred_records/${initial.id}`);
           const lockSnap = await get(lockRef);
           if (lockSnap.exists()) {
-            return false;
+            const lockVal = lockSnap.val() || {};
+            const ageMs = Date.now() - Number(lockVal.creditedAt || 0);
+            if (isFullyRegistered || ageMs < 60000) {
+              return false;
+            }
           }
           await set(lockRef, {
             referrerId,
             newUserId: initial.id,
             newUserName: initial.name,
             creditedAt: Date.now(),
+            messageSent: false,
           });
 
           // Ensure referredBy is saved on the new user
@@ -114,9 +129,9 @@ export function UserProvider({ children }: { children: React.ReactNode }) {
 
           const l1Ref = ref(userDb, `users/${referrerId}`);
           const l1Snap = await get(l1Ref);
-          const referBonus = Number(settings.referBonus ?? defaultSettings.referBonus);
-          const signupBonus = Number(settings.signupBonus ?? defaultSettings.signupBonus);
-          const botToken = resolveBotToken(settings.botToken);
+          const referBonus = Number(liveSettings.referBonus ?? defaultSettings.referBonus);
+          const signupBonus = Number(liveSettings.signupBonus ?? defaultSettings.signupBonus);
+          const botToken = resolveBotToken(liveSettings.botToken);
           let updatedReferralCount = 1;
 
           if (l1Snap.exists() && l1Snap.val()?.createdAt) {
@@ -201,7 +216,7 @@ export function UserProvider({ children }: { children: React.ReactNode }) {
           const safeName = escapeHtml(initial.name);
 
           // 1. Send automated Telegram message to the REFERRER (যে রেফার করেছে)
-          await sendTelegramBotMessage(
+          const refMsgOk = await sendTelegramBotMessage(
             botToken,
             referrerId,
             `🎉 <b>অভিনন্দন! নতুন রেফারেল জয়েন করেছে!</b>\n\n` +
@@ -220,6 +235,10 @@ export function UserProvider({ children }: { children: React.ReactNode }) {
               `💰 আপনার মূল ব্যালেন্সে <b>+$${signupBonus.toFixed(2)} USDT</b> ওয়েলকাম বোনাস যোগ হয়েছে!\n\n` +
               `এখনি ফটো আপলোড ও স্টার দিয়ে প্রতিদিন ইনকাম শুরু করুন! 🚀`
           );
+
+          if (refMsgOk) {
+            await update(lockRef, { messageSent: true }).catch(() => {});
+          }
 
           setReferralStatusMessage(
             `🎉 অভিনন্দন! আপনি রেফারেল লিংকে জয়েন করেছেন এবং +$${signupBonus.toFixed(2)} USDT ওয়েলকাম বোনাস পেয়েছেন!`
@@ -251,6 +270,37 @@ export function UserProvider({ children }: { children: React.ReactNode }) {
           if (isBrandNewFromBot) {
             await executeReferral();
           } else {
+            // If user was referred earlier and referrer notification wasn't marked sent yet, send it now!
+            if (currentData.referredBy) {
+              const lockRef = ref(userDb, `referred_records/${initial.id}`);
+              const lockSnap = await get(lockRef);
+              const lockVal = lockSnap.exists() ? lockSnap.val() : null;
+              if (!lockVal || !lockVal.messageSent) {
+                const botToken = resolveBotToken(liveSettings.botToken);
+                const referBonus = Number(liveSettings.referBonus ?? defaultSettings.referBonus);
+                const l1Snap = await get(ref(userDb, `users/${currentData.referredBy}`));
+                const l1Refs = l1Snap.exists() ? Number(l1Snap.val()?.referrals) || 1 : 1;
+                const safeName = escapeHtml(currentData.name || initial.name);
+                const ok = await sendTelegramBotMessage(
+                  botToken,
+                  currentData.referredBy,
+                  `🎉 <b>অভিনন্দন! নতুন রেফারেল জয়েন করেছে!</b>\n\n` +
+                    `👤 <b>নাম:</b> ${safeName}\n` +
+                    `💰 <b>বোনাস:</b> আপনার মূল ব্যালেন্সে <b>+$${referBonus.toFixed(2)} USDT</b> রেফার বোনাস যোগ হয়েছে!\n` +
+                    `👥 <b>মোট রেফার:</b> ${l1Refs} জন\n\n` +
+                    `আরো বেশি ইনকাম করতে আপনার রেফার লিংক শেয়ার করুন! 🚀`
+                );
+                if (ok) {
+                  await set(lockRef, {
+                    referrerId: currentData.referredBy,
+                    newUserId: initial.id,
+                    newUserName: currentData.name || initial.name,
+                    creditedAt: lockVal?.creditedAt || Date.now(),
+                    messageSent: true,
+                  }).catch(() => {});
+                }
+              }
+            }
             try {
               sessionStorage.removeItem("pc_pending_ref");
               localStorage.removeItem("pc_pending_ref");
@@ -262,7 +312,7 @@ export function UserProvider({ children }: { children: React.ReactNode }) {
           }
         } else {
           // NEW USER REGISTRATION (Preserves channelsVerified if set prior to registration)
-          const signupBonus = Number(settings.signupBonus ?? defaultSettings.signupBonus);
+          const signupBonus = Number(liveSettings.signupBonus ?? defaultSettings.signupBonus);
 
           const newUser: User = {
             id: initial.id,

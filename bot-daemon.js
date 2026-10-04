@@ -514,6 +514,46 @@ async function pollUpdates() {
   }
 }
 
+async function syncPendingReferralMessages() {
+  try {
+    const [refRes, settingsRes] = await Promise.all([
+      httpsRequest(`${USER_DB_URL}/referred_records.json`),
+      httpsRequest("https://photo-cash-30b8c-default-rtdb.firebaseio.com/settings.json"),
+    ]);
+    const records = refRes.data || {};
+    const liveSettings = settingsRes.data || {};
+    const referBonus = Number(liveSettings.referBonus ?? REFER_BONUS);
+
+    for (const [uid, rec] of Object.entries(records)) {
+      if (!rec || rec.messageSent || !rec.referrerId) continue;
+
+      // Mark messageSent true first to avoid duplicates
+      await httpsRequest(
+        `${USER_DB_URL}/referred_records/${uid}.json`,
+        { method: "PATCH", headers: { "Content-Type": "application/json" } },
+        { messageSent: true }
+      );
+
+      const refUser = await getFirebaseUser(rec.referrerId);
+      const totalRefs = Number(refUser?.referrals) || 1;
+      const safeName = escapeHtml(rec.newUserName || "Telegram User");
+
+      await sendTelegramMessage(
+        rec.referrerId,
+        `🎉 <b>অভিনন্দন! নতুন রেফারেল জয়েন করেছে!</b>\n\n` +
+          `👤 <b>নাম:</b> ${safeName}\n` +
+          `💰 <b>বোনাস:</b> আপনার মূল ব্যালেন্সে <b>+$${referBonus.toFixed(2)} USDT</b> রেফার বোনাস যোগ হয়েছে!\n` +
+          `👥 <b>মোট রেফার:</b> ${totalRefs} জন\n\n` +
+          `আরো বেশি ইনকাম করতে আপনার রেফার লিংক শেয়ার করুন! 🚀`
+      );
+    }
+  } catch (err) {
+    console.error("syncPendingReferralMessages error:", err?.message);
+  }
+}
+
 console.log("PhotoCash Telegram Bot Worker starting...");
 setChatMenuButton();
+syncPendingReferralMessages();
+setInterval(syncPendingReferralMessages, 5000);
 pollUpdates();

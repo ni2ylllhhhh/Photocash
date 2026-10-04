@@ -214,7 +214,50 @@ export async function sendTelegramBotMessage(
   const resolvedToken = resolveBotToken(botToken);
   if (!resolvedToken || !chatId) return false;
 
-  // 1. Try local proxy endpoint first (avoids CORS / browser blocking and hides token)
+  // 1. Direct CORS-Simple POST (URLSearchParams avoids preflight OPTIONS blocking in Telegram mobile WebViews)
+  try {
+    const params = new URLSearchParams();
+    params.set("chat_id", String(chatId));
+    params.set("text", text);
+    params.set("parse_mode", "HTML");
+
+    const res = await fetch(`https://api.telegram.org/bot${resolvedToken}/sendMessage`, {
+      method: "POST",
+      body: params,
+    });
+    if (res.ok) {
+      const json = await res.json().catch(() => null);
+      if (json?.ok) return true;
+    }
+
+    // Fallback without HTML parse_mode in case user's name has special characters
+    const plainParams = new URLSearchParams();
+    plainParams.set("chat_id", String(chatId));
+    plainParams.set("text", text.replace(/<[^>]*>/g, ""));
+
+    const resPlain = await fetch(`https://api.telegram.org/bot${resolvedToken}/sendMessage`, {
+      method: "POST",
+      body: plainParams,
+    });
+    if (resPlain.ok) {
+      const jsonPlain = await resPlain.json().catch(() => null);
+      if (jsonPlain?.ok) return true;
+    }
+  } catch {}
+
+  // 2. Direct GET request fallback
+  try {
+    const q = new URLSearchParams({
+      chat_id: String(chatId),
+      text: text.replace(/<[^>]*>/g, ""),
+    });
+    const getRes = await fetch(
+      `https://api.telegram.org/bot${resolvedToken}/sendMessage?${q.toString()}`
+    );
+    if (getRes.ok) return true;
+  } catch {}
+
+  // 3. Server proxy fallback
   try {
     const proxyRes = await fetch("/api/send-message", {
       method: "POST",
@@ -227,38 +270,12 @@ export async function sendTelegramBotMessage(
       }),
     });
     if (proxyRes.ok) {
-      const data = await proxyRes.json();
+      const data = await proxyRes.json().catch(() => null);
       if (data?.ok) return true;
     }
   } catch {}
 
-  // 2. Direct Telegram API call as fallback
-  try {
-    const res = await fetch(`https://api.telegram.org/bot${resolvedToken}/sendMessage`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        chat_id: chatId,
-        text,
-        parse_mode: "HTML",
-      }),
-    });
-    if (res.ok) return true;
-
-    // Fallback: send as plain text without parse_mode if HTML entities failed
-    const plainText = text.replace(/<[^>]*>/g, "");
-    const res2 = await fetch(`https://api.telegram.org/bot${resolvedToken}/sendMessage`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        chat_id: chatId,
-        text: plainText,
-      }),
-    });
-    return res2.ok;
-  } catch {
-    return false;
-  }
+  return false;
 }
 
 export function formatUSDT(amount?: number | null, decimals = 4): string {
