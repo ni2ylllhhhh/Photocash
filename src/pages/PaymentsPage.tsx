@@ -43,23 +43,27 @@ export function PaymentsPage() {
     const wRef = ref(userDb, "withdrawals");
     const unsubscribe = onValue(wRef, (snapshot) => {
       const data = snapshot.val() || {};
-      const list: Withdrawal[] = Object.entries(data).map(([key, val]: [string, any]) => ({
+      const allList: Withdrawal[] = Object.entries(data).map(([key, val]: [string, any]) => ({
         ...val,
         id: val.id || key,
       }));
 
-      // Sort oldest to newest first to assign sequential WD-0000000001, WD-0000000002...
-      const userAsc = list
+      // Assign global sequential serial numbers (WD-0000000001, WD-0000000002...) matching Admin Panel
+      const allSortedAsc = [...allList].sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
+      const serialMap = new Map<string, number>();
+      allSortedAsc.forEach((w, idx) => {
+        serialMap.set(w.id, idx + 1);
+      });
+
+      const userItems = allList
         .filter((w) => w.uid === user.id)
-        .sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0))
         .map((w, idx) => ({
           ...w,
-          orderNumber: idx + 1,
-        }));
+          orderNumber: serialMap.get(w.id) || idx + 1,
+        }))
+        .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
 
-      // Display newest first
-      userAsc.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
-      setWithdrawals(userAsc);
+      setWithdrawals(userItems);
     });
     return () => unsubscribe();
   }, [user?.id]);
@@ -87,7 +91,7 @@ export function PaymentsPage() {
     if (status === "approved") {
       return (
         <span className="text-[14px] font-extrabold text-emerald-600">
-          Approved
+          Successful
         </span>
       );
     }
@@ -143,7 +147,7 @@ export function PaymentsPage() {
           >
             <option value="all">All statuses</option>
             <option value="pending">Pending Review</option>
-            <option value="approved">Approved</option>
+            <option value="approved">Successful</option>
             <option value="rejected">Rejected</option>
           </select>
           <ChevronDown

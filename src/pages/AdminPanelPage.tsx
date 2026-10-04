@@ -954,6 +954,27 @@ function PostsTab() {
   );
 }
 
+function formatAdminDateTime(timestamp?: number): string {
+  if (!timestamp) return "—";
+  const d = new Date(timestamp);
+  if (isNaN(d.getTime())) return "—";
+  const yyyy = d.getFullYear();
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  const hh = String(d.getHours()).padStart(2, "0");
+  const min = String(d.getMinutes()).padStart(2, "0");
+  const ss = String(d.getSeconds()).padStart(2, "0");
+  return `${yyyy}-${mm}-${dd} ${hh}:${min}:${ss}`;
+}
+
+function formatMethodLabelAdmin(method: string): string {
+  const lower = (method || "").toLowerCase();
+  if (lower.includes("bkash")) return "BKASH";
+  if (lower.includes("nagad")) return "NAGAD";
+  if (lower.includes("binance")) return "BINANCE";
+  return (method || "BKASH").toUpperCase();
+}
+
 function WithdrawalsTab({
   settings,
   save,
@@ -961,11 +982,21 @@ function WithdrawalsTab({
   settings: Settings;
   save: (s: Partial<Settings>) => Promise<void>;
 }) {
-  const [withdrawals, setWithdrawals] = useState<Withdrawal[]>([]);
+  const [withdrawals, setWithdrawals] = useState<(Withdrawal & { orderNumber: number })[]>([]);
   const [adminChatId, setAdminChatId] = useState(settings.adminChatId || "");
   const [savingChatId, setSavingChatId] = useState(false);
   const [chatIdMsg, setChatIdMsg] = useState<string | null>(null);
   const [copiedAccount, setCopiedAccount] = useState<string | null>(null);
+  const [copiedUid, setCopiedUid] = useState<string | null>(null);
+
+  // Filter & Search
+  const [statusFilter, setStatusFilter] = useState<string>("all");
+  const [searchQuery, setSearchQuery] = useState<string>("");
+
+  // Number editing state per withdrawal ID
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editedNumbers, setEditedNumbers] = useState<Record<string, string>>({});
+  const [processingId, setProcessingId] = useState<string | null>(null);
 
   useEffect(() => {
     setAdminChatId(settings.adminChatId || "");
@@ -975,9 +1006,21 @@ function WithdrawalsTab({
     const wRef = ref(userDb, "withdrawals");
     const unsubscribe = onValue(wRef, (snap) => {
       const data = snap.val() || {};
-      const list: Withdrawal[] = Object.values(data);
-      list.sort((a, b) => b.createdAt - a.createdAt);
-      setWithdrawals(list);
+      const allList: Withdrawal[] = Object.entries(data).map(([key, val]: [string, any]) => ({
+        ...val,
+        id: val.id || key,
+      }));
+
+      // Sort oldest to newest first to assign sequential serial numbers (#1 -> WD-0000000001)
+      const asc = [...allList].sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
+      const withSerial = asc.map((w, idx) => ({
+        ...w,
+        orderNumber: idx + 1,
+      }));
+
+      // Display newest requests at top (serial order visible on each card)
+      withSerial.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+      setWithdrawals(withSerial);
     });
     return () => unsubscribe();
   }, []);
@@ -996,9 +1039,68 @@ function WithdrawalsTab({
     }
   };
 
-  const setStatus = async (item: Withdrawal, status: "approved" | "rejected") => {
-    await update(ref(userDb, `withdrawals/${item.id}`), { status, updatedAt: Date.now() });
-    if (status === "rejected") {
+  // Save edited number AND automatically approve (or approve directly)
+  const handleSaveAndApprove = async (item: Withdrawal & { orderNumber: number }, customAccount?: string) => {
+    const finalAccount = (
+      customAccount !== undefined
+        ? customAccount
+        : editedNumbers[item.id] !== undefined
+        ? editedNumbers[item.id]
+        : item.account
+    ).trim();
+
+    if (!finalAccount) return;
+    setProcessingId(item.id);
+
+    try {
+      const now = Date.now();
+      await update(ref(userDb, `withdrawals/${item.id}`), {
+        account: finalAccount,
+        status: "approved",
+        updatedAt: now,
+      });
+
+      // Also update user's saved account number if edited
+      if (finalAccount !== item.account) {
+        const lowerMethod = (item.method || "").toLowerCase();
+        const userFieldUpdate: Record<string, string> = {};
+        if (lowerMethod.includes("bkash")) userFieldUpdate.bkashNumber = finalAccount;
+        else if (lowerMethod.includes("nagad")) userFieldUpdate.nagadNumber = finalAccount;
+        else userFieldUpdate.binanceId = finalAccount;
+
+        await update(ref(userDb, `users/${item.uid}`), userFieldUpdate).catch(() => {});
+      }
+
+      setEditingId(null);
+
+      // Send Telegram Notification to the User via Bot
+      const botToken = resolveBotToken(settings.botToken);
+      const wdCode = `WD-${String(item.orderNumber).padStart(10, "0")}`;
+      const msg =
+        `🎉 <b>অভিনন্দন! আপনার উইথড্র সফল (Successful) হয়েছে!</b>\n\n` +
+        `🧾 <b>সিরিয়াল আইডি:</b> <code>${wdCode}</code>\n` +
+        `💵 <b>পরিমাণ:</b> $${item.amount.toFixed(2)} USDT\n` +
+        `💳 <b>পেমেন্ট মেথড:</b> ${formatMethodLabelAdmin(item.method)}\n` +
+        `📞 <b>একাউন্ট / নাম্বার:</b> <code>${finalAccount}</code>\n` +
+        `✅ <b>স্ট্যাটাস:</b> Successful (পেমেন্ট সম্পন্ন হয়েছে)\n\n` +
+        `আপনার একাউন্টে টাকা সফলভাবে পাঠানো হয়েছে। PhotoCash-এ কাজ করার জন্য ধন্যবাদ! 📸💸`;
+      await sendTelegramBotMessage(botToken, item.uid, msg).catch(() => {});
+    } catch (err) {
+      console.error("Approve withdrawal error:", err);
+    } finally {
+      setProcessingId(null);
+    }
+  };
+
+  const handleReject = async (item: Withdrawal & { orderNumber: number }) => {
+    setProcessingId(item.id);
+    try {
+      const now = Date.now();
+      await update(ref(userDb, `withdrawals/${item.id}`), {
+        status: "rejected",
+        updatedAt: now,
+      });
+
       await runTransaction(ref(userDb, `users/${item.uid}`), (u) => {
         if (!u) return u;
         return {
@@ -1006,31 +1108,21 @@ function WithdrawalsTab({
           balance: +((u.balance || 0) + item.amount).toFixed(4),
         };
       });
-    }
 
-    // Send Telegram Notification to the User via Bot
-    const botToken = resolveBotToken(settings.botToken);
-    try {
-      if (status === "approved") {
-        const msg =
-          `🎉 <b>অভিনন্দন! আপনার উইথড্র সফল হয়েছে!</b>\n\n` +
-          `💵 <b>পরিমাণ:</b> $${item.amount.toFixed(2)} USDT\n` +
-          `💳 <b>পেমেন্ট মেথড:</b> ${item.method}\n` +
-          `📞 <b>একাউন্ট / নাম্বার:</b> <code>${item.account}</code>\n` +
-          `✅ <b>স্ট্যাটাস:</b> পেইড / অ্যাপ্রুভড (Paid)\n\n` +
-          `আপনার একাউন্টে টাকা সফলভাবে পাঠানো হয়েছে। PhotoCash-এ কাজ করার জন্য ধন্যবাদ! 📸💸`;
-        await sendTelegramBotMessage(botToken, item.uid, msg);
-      } else {
-        const msg =
-          `⚠️ <b>আপনার উইথড্র রিকোয়েস্ট বাতিল করা হয়েছে</b>\n\n` +
-          `💵 <b>পরিমাণ:</b> $${item.amount.toFixed(2)} USDT (${item.method})\n` +
-          `📞 <b>একাউন্ট:</b> <code>${item.account}</code>\n` +
-          `❌ <b>স্ট্যাটাস:</b> রিজেক্টেড (Rejected)\n\n` +
-          `উইথড্র করার $${item.amount.toFixed(2)} USDT আপনার PhotoCash একাউন্টে রিফান্ড করা হয়েছে। সঠিক ফোন নাম্বার বা একাউন্ট দিয়ে পুনরায় চেষ্টা করুন।`;
-        await sendTelegramBotMessage(botToken, item.uid, msg);
-      }
+      const botToken = resolveBotToken(settings.botToken);
+      const wdCode = `WD-${String(item.orderNumber).padStart(10, "0")}`;
+      const msg =
+        `⚠️ <b>আপনার উইথড্র রিকোয়েস্ট বাতিল করা হয়েছে</b>\n\n` +
+        `🧾 <b>সিরিয়াল আইডি:</b> <code>${wdCode}</code>\n` +
+        `💵 <b>পরিমাণ:</b> $${item.amount.toFixed(2)} USDT (${formatMethodLabelAdmin(item.method)})\n` +
+        `📞 <b>একাউন্ট:</b> <code>${item.account}</code>\n` +
+        `❌ <b>স্ট্যাটাস:</b> Rejected\n\n` +
+        `উইথড্র করার $${item.amount.toFixed(2)} USDT আপনার PhotoCash একাউন্টে রিফান্ড করা হয়েছে। সঠিক ফোন নাম্বার বা একাউন্ট দিয়ে পুনরায় চেষ্টা করুন।`;
+      await sendTelegramBotMessage(botToken, item.uid, msg).catch(() => {});
     } catch (err) {
-      console.error("Telegram notification error:", err);
+      console.error("Reject withdrawal error:", err);
+    } finally {
+      setProcessingId(null);
     }
   };
 
@@ -1040,11 +1132,32 @@ function WithdrawalsTab({
     setTimeout(() => setCopiedAccount(null), 1500);
   };
 
-  const statusBadge = (s: string) => {
-    if (s === "approved") return "bg-emerald-500/20 text-emerald-400";
-    if (s === "rejected") return "bg-red-500/20 text-red-400";
-    return "bg-amber-500/20 text-amber-400";
+  const copyUserId = (uid: string, id: string) => {
+    navigator.clipboard?.writeText(uid);
+    setCopiedUid(id);
+    setTimeout(() => setCopiedUid(null), 1500);
   };
+
+  const filteredList = useMemo(() => {
+    return withdrawals.filter((w) => {
+      if (statusFilter !== "all" && w.status !== statusFilter) return false;
+      if (searchQuery.trim()) {
+        const q = searchQuery.trim().toLowerCase();
+        const wdCode = `wd-${String(w.orderNumber).padStart(10, "0")}`;
+        const matchCode = wdCode.includes(q) || String(w.orderNumber) === q;
+        const matchAccount = (w.account || "").toLowerCase().includes(q);
+        const matchUid = (w.uid || "").toLowerCase().includes(q);
+        const matchName = (w.name || "").toLowerCase().includes(q);
+        const matchUser = (w.username || "").toLowerCase().includes(q);
+        return matchCode || matchAccount || matchUid || matchName || matchUser;
+      }
+      return true;
+    });
+  }, [withdrawals, statusFilter, searchQuery]);
+
+  const pendingCount = withdrawals.filter((w) => w.status === "pending").length;
+  const approvedCount = withdrawals.filter((w) => w.status === "approved").length;
+  const rejectedCount = withdrawals.filter((w) => w.status === "rejected").length;
 
   return (
     <div className="space-y-4 pb-8">
@@ -1057,7 +1170,7 @@ function WithdrawalsTab({
           </h2>
         </div>
         <p className="mt-1 text-[11px] text-white/60">
-          যেকোনো ইউজার ক্যাশআউট রিকোয়েস্ট দিলে স্বয়ংক্রিয়ভাবে আপনার টেলিগ্রামে মেসেজ ও ইউজারের ফোন নাম্বার চলে আসবে।
+          যেকোনো ইউজার ক্যাশআউট রিকোয়েস্ট দিলে সরাসরি এই পেইজে সিরিয়াল অনুযায়ী চলে আসবে এবং আপনার টেলিগ্রামেও মেসেজ যাবে।
         </p>
 
         <div className="mt-3 flex flex-col gap-2 sm:flex-row">
@@ -1090,98 +1203,306 @@ function WithdrawalsTab({
         )}
       </section>
 
-      {/* Withdrawals List */}
-      <div>
-        <p className="mb-2 text-[11px] text-white/40">
-          {withdrawals.filter((w) => w.status === "pending").length} pending • {withdrawals.length} total
-        </p>
+      {/* Filter & Search Section */}
+      <section className="rounded-2xl border border-white/10 bg-[#171a21] p-3.5 space-y-3">
+        <div className="flex flex-wrap gap-1.5">
+          <button
+            type="button"
+            onClick={() => setStatusFilter("all")}
+            className={`rounded-xl px-3 py-1.5 text-[11.5px] font-bold transition ${
+              statusFilter === "all"
+                ? "bg-white text-black"
+                : "bg-white/5 text-white/70 hover:bg-white/10"
+            }`}
+          >
+            সব রিকোয়েস্ট ({withdrawals.length})
+          </button>
+          <button
+            type="button"
+            onClick={() => setStatusFilter("pending")}
+            className={`rounded-xl px-3 py-1.5 text-[11.5px] font-bold transition ${
+              statusFilter === "pending"
+                ? "bg-amber-500 text-black"
+                : "bg-amber-500/15 text-amber-400 hover:bg-amber-500/25"
+            }`}
+          >
+            ⏳ Pending Review ({pendingCount})
+          </button>
+          <button
+            type="button"
+            onClick={() => setStatusFilter("approved")}
+            className={`rounded-xl px-3 py-1.5 text-[11.5px] font-bold transition ${
+              statusFilter === "approved"
+                ? "bg-emerald-500 text-black"
+                : "bg-emerald-500/15 text-emerald-400 hover:bg-emerald-500/25"
+            }`}
+          >
+            ✅ Successful ({approvedCount})
+          </button>
+          <button
+            type="button"
+            onClick={() => setStatusFilter("rejected")}
+            className={`rounded-xl px-3 py-1.5 text-[11.5px] font-bold transition ${
+              statusFilter === "rejected"
+                ? "bg-rose-500 text-white"
+                : "bg-rose-500/15 text-rose-400 hover:bg-rose-500/25"
+            }`}
+          >
+            ❌ Rejected ({rejectedCount})
+          </button>
+        </div>
 
-        <ul className="space-y-2.5">
-          {withdrawals.map((w) => {
+        <div className="relative">
+          <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-white/40" />
+          <input
+            type="text"
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            placeholder="সিরিয়াল (WD-0000000001), নাম্বার (017...), ইউজার আইডি বা নাম দিয়ে খুঁজুন..."
+            className="w-full rounded-xl bg-black/40 pl-9 pr-3.5 py-2 text-[12px] text-white outline-none ring-1 ring-white/10 focus:ring-emerald-400"
+          />
+        </div>
+      </section>
+
+      {/* Withdrawals Serial List */}
+      {filteredList.length === 0 ? (
+        <div className="rounded-2xl border border-white/10 bg-[#171a21] py-12 text-center text-[12.5px] text-white/50">
+          কোনো পেমেন্ট রিকোয়েস্ট পাওয়া যায়নি।
+        </div>
+      ) : (
+        <ul className="space-y-3">
+          {filteredList.map((w) => {
+            const wdCode = `WD-${String(w.orderNumber).padStart(10, "0")}`;
+            const currentNumberValue =
+              editedNumbers[w.id] !== undefined ? editedNumbers[w.id] : w.account;
+            const isEditing = editingId === w.id;
+            const isNumberChanged =
+              editedNumbers[w.id] !== undefined &&
+              editedNumbers[w.id].trim() !== w.account.trim();
             const isPhone = /^(01|\+8801)\d{9}/.test(w.account.trim());
+            const isBusy = processingId === w.id;
 
             return (
-              <li key={w.id} className="rounded-2xl border border-white/10 bg-white/5 p-3.5 shadow-sm">
-                <div className="flex items-center justify-between">
-                  <p className="text-[15px] font-extrabold text-white">
-                    {formatUSDT(w.amount, 2)}
-                    <span className="ml-1.5 text-[11px] font-normal text-white/40">
-                      (≈ {(w.amount * 125).toFixed(0)} BDT)
+              <li
+                key={w.id}
+                className="rounded-2xl border border-white/15 bg-[#171a21] p-4 shadow-md"
+              >
+                {/* Top Row: Serial # & WD Code on Left, Status on Right */}
+                <div className="flex flex-wrap items-center justify-between gap-2 border-b border-white/10 pb-3">
+                  <div className="flex items-center gap-2">
+                    <span className="rounded-lg bg-amber-500/20 px-2 py-0.5 text-[11px] font-extrabold text-amber-400">
+                      সিরিয়াল #{w.orderNumber}
                     </span>
-                  </p>
-                  <span className={`rounded-full px-2.5 py-0.5 text-[10px] font-black uppercase tracking-wider ${statusBadge(w.status)}`}>
-                    {w.status}
-                  </span>
-                </div>
-
-                <div className="mt-2 flex items-center justify-between text-[11.5px]">
-                  <p className="text-white/80">
-                    <span className="font-bold text-white">{w.name}</span>{" "}
-                    {w.username && (
-                      <a
-                        href={`https://t.me/${w.username}`}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="text-emerald-400 hover:underline"
-                      >
-                        (@{w.username})
-                      </a>
-                    )}{" "}
-                    • ID: <span className="font-mono text-white/60">{w.uid}</span>
-                  </p>
-                  <span className="text-[10px] text-white/40">{formatTimeAgo(w.createdAt)}</span>
-                </div>
-
-                {/* Account & Phone Section */}
-                <div className="mt-2.5 flex flex-wrap items-center justify-between gap-2 rounded-xl bg-black/40 px-3 py-2 text-[12px]">
-                  <div className="flex items-center gap-1.5">
-                    <span className="font-bold text-amber-400">{w.method}:</span>
-                    <span className="font-mono font-extrabold text-white">{w.account}</span>
+                    <span className="text-[15px] font-extrabold tracking-tight text-white">
+                      {wdCode}
+                    </span>
                   </div>
 
-                  <div className="flex items-center gap-1.5">
-                    {isPhone && (
-                      <a
-                        href={`tel:${w.account.trim()}`}
-                        className="flex items-center gap-1 rounded-lg bg-emerald-500/20 px-2.5 py-1 text-[11px] font-bold text-emerald-400 transition hover:bg-emerald-500/30 active:scale-95"
-                      >
-                        <Phone size={12} />
-                        <span>ফোন করুন</span>
-                      </a>
-                    )}
-                    <button
-                      type="button"
-                      onClick={() => copyNumber(w.account.trim(), w.id)}
-                      className="flex items-center gap-1 rounded-lg bg-white/10 px-2.5 py-1 text-[11px] font-semibold text-white/80 transition hover:bg-white/20 active:scale-95"
-                    >
-                      {copiedAccount === w.id ? (
-                        <>
-                          <Check size={12} className="text-emerald-400" />
-                          <span className="text-emerald-400">কপি হয়েছে</span>
-                        </>
-                      ) : (
-                        <>
-                          <Copy size={12} />
-                          <span>কপি</span>
-                        </>
+                  {w.status === "approved" ? (
+                    <span className="inline-flex items-center gap-1 rounded-full bg-emerald-500/20 px-3 py-1 text-[11.5px] font-extrabold text-emerald-400 border border-emerald-500/30">
+                      <CheckCircle2 size={13} />
+                      <span>Successful (পেমেন্ট সম্পন্ন)</span>
+                    </span>
+                  ) : w.status === "rejected" ? (
+                    <span className="inline-flex items-center gap-1 rounded-full bg-rose-500/20 px-3 py-1 text-[11.5px] font-extrabold text-rose-400 border border-rose-500/30">
+                      <XCircle size={13} />
+                      <span>Rejected</span>
+                    </span>
+                  ) : (
+                    <span className="inline-flex items-center gap-1 rounded-full bg-amber-500/20 px-3 py-1 text-[11.5px] font-extrabold text-amber-400 border border-amber-500/30">
+                      <span>Pending Review</span>
+                    </span>
+                  )}
+                </div>
+
+                {/* Details Table matching Withdrawal Records */}
+                <div className="mt-3 space-y-2 text-[13px]">
+                  {/* User Name & Telegram Link */}
+                  <div className="flex items-center justify-between">
+                    <span className="text-white/50">User Name</span>
+                    <div className="flex items-center gap-1.5 font-bold text-white">
+                      <span>{w.name}</span>
+                      {w.username && (
+                        <a
+                          href={`https://t.me/${w.username}`}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="text-emerald-400 hover:underline text-[12px]"
+                        >
+                          (@{w.username})
+                        </a>
                       )}
-                    </button>
+                    </div>
+                  </div>
+
+                  {/* User ID */}
+                  <div className="flex items-center justify-between">
+                    <span className="text-white/50">User ID (আইডি)</span>
+                    <div className="flex items-center gap-1.5">
+                      <span className="font-mono text-[13px] font-bold text-amber-300">
+                        {w.uid}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => copyUserId(w.uid, w.id)}
+                        className="rounded-md bg-white/10 px-2 py-0.5 text-[10px] font-semibold text-white/80 hover:bg-white/20"
+                      >
+                        {copiedUid === w.id ? "কপি হয়েছে ✓" : "কপি আইডি"}
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Method */}
+                  <div className="flex items-center justify-between">
+                    <span className="text-white/50">Method</span>
+                    <span className="font-extrabold text-white">
+                      {formatMethodLabelAdmin(w.method)}
+                    </span>
+                  </div>
+
+                  {/* Amount */}
+                  <div className="flex items-center justify-between">
+                    <span className="text-white/50">Amount</span>
+                    <span className="text-[14px] font-extrabold text-emerald-400">
+                      {formatUSDT(w.amount, 2)}{" "}
+                      <span className="text-[11px] font-normal text-white/50">
+                        (≈ ৳{(w.amount * 125).toFixed(0)})
+                      </span>
+                    </span>
+                  </div>
+
+                  {/* number (with inline edit & save-to-approve) */}
+                  <div className="rounded-xl border border-white/10 bg-black/40 p-3 mt-2">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div>
+                        <span className="block text-[11px] text-white/50">
+                          number (পেমেন্ট নাম্বার / একাউন্ট)
+                        </span>
+                        <span className="font-mono text-[16px] font-extrabold text-white">
+                          {w.account}
+                        </span>
+                      </div>
+
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        {isPhone && (
+                          <a
+                            href={`tel:${w.account.trim()}`}
+                            className="flex items-center gap-1 rounded-lg bg-emerald-500/20 px-2.5 py-1.5 text-[11px] font-bold text-emerald-400 transition hover:bg-emerald-500/30"
+                          >
+                            <Phone size={12} />
+                            <span>কল</span>
+                          </a>
+                        )}
+                        <button
+                          type="button"
+                          onClick={() => copyNumber(w.account.trim(), w.id)}
+                          className="flex items-center gap-1 rounded-lg bg-white/10 px-2.5 py-1.5 text-[11px] font-semibold text-white/90 transition hover:bg-white/20"
+                        >
+                          {copiedAccount === w.id ? (
+                            <>
+                              <Check size={12} className="text-emerald-400" />
+                              <span className="text-emerald-400">কপি হয়েছে</span>
+                            </>
+                          ) : (
+                            <>
+                              <Copy size={12} />
+                              <span>কপি</span>
+                            </>
+                          )}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (isEditing) {
+                              setEditingId(null);
+                            } else {
+                              setEditedNumbers((prev) => ({
+                                ...prev,
+                                [w.id]: prev[w.id] ?? w.account,
+                              }));
+                              setEditingId(w.id);
+                            }
+                          }}
+                          className="rounded-lg bg-amber-500/20 border border-amber-500/40 px-2.5 py-1.5 text-[11px] font-bold text-amber-300 transition hover:bg-amber-500/30"
+                        >
+                          {isEditing ? "বাতিল" : "✏️ নাম্বার এডিট"}
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Editable Number Box: Saving automatically approves the withdrawal! */}
+                    {isEditing && (
+                      <div className="mt-3 border-t border-white/10 pt-3 space-y-2">
+                        <label className="block text-[11px] font-semibold text-amber-300">
+                          সঠিক নাম্বার / একাউন্ট লিখে সেভ করলে অটোমেটিক Approve (Successful) হয়ে যাবে:
+                        </label>
+                        <div className="flex flex-col gap-2 sm:flex-row">
+                          <input
+                            type="text"
+                            value={currentNumberValue}
+                            onChange={(e) =>
+                              setEditedNumbers((prev) => ({
+                                ...prev,
+                                [w.id]: e.target.value,
+                              }))
+                            }
+                            placeholder="সঠিক বিকাশ/নগদ নাম্বার বা বাইনান্স আইডি দিন"
+                            className="flex-1 rounded-xl border border-amber-400/50 bg-black/70 px-3 py-2 font-mono text-[14px] font-bold text-white outline-none focus:border-emerald-400"
+                          />
+                          <button
+                            type="button"
+                            disabled={isBusy}
+                            onClick={() => handleSaveAndApprove(w, currentNumberValue)}
+                            className="flex items-center justify-center gap-1.5 rounded-xl bg-emerald-500 px-4 py-2 text-[12px] font-extrabold text-black shadow-md transition hover:bg-emerald-400 active:scale-95 disabled:opacity-50"
+                          >
+                            <Check size={15} />
+                            <span>সেভ ও Approve করুন</span>
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Timestamps */}
+                  <div className="border-t border-white/10 pt-2.5 space-y-1 text-[12px]">
+                    <div className="flex items-center justify-between">
+                      <span className="text-white/50">Application time</span>
+                      <span className="font-mono text-white/80">
+                        {formatAdminDateTime(w.createdAt)}
+                      </span>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <span className="text-white/50">Update time</span>
+                      <span className="font-mono text-white/80">
+                        {w.updatedAt ? formatAdminDateTime(w.updatedAt) : "—"}
+                      </span>
+                    </div>
                   </div>
                 </div>
 
+                {/* Action Buttons */}
                 {w.status === "pending" && (
-                  <div className="mt-3 flex gap-2">
+                  <div className="mt-3.5 flex gap-2">
                     <button
                       type="button"
-                      onClick={() => setStatus(w, "approved")}
-                      className="flex-1 rounded-xl bg-emerald-500 py-2 text-center text-[12px] font-bold text-black shadow-md transition hover:bg-emerald-400 active:scale-95"
+                      disabled={isBusy}
+                      onClick={() =>
+                        handleSaveAndApprove(
+                          w,
+                          isNumberChanged ? currentNumberValue : w.account
+                        )
+                      }
+                      className="flex-1 rounded-xl bg-emerald-500 py-2.5 text-center text-[12.5px] font-extrabold text-black shadow-md transition hover:bg-emerald-400 active:scale-95 disabled:opacity-50"
                     >
-                      ✓ Approve (টাকা পাঠানো হয়েছে)
+                      {isNumberChanged
+                        ? "💾 নাম্বার সেভ ও Approve (Successful) করুন"
+                        : "✓ Approve করুন (Successful দেখান)"}
                     </button>
                     <button
                       type="button"
-                      onClick={() => setStatus(w, "rejected")}
-                      className="rounded-xl border border-red-500/40 bg-red-500/10 px-3 py-2 text-[12px] font-bold text-red-400 transition hover:bg-red-500/20 active:scale-95"
+                      disabled={isBusy}
+                      onClick={() => handleReject(w)}
+                      className="rounded-xl border border-red-500/40 bg-red-500/10 px-3.5 py-2.5 text-[12px] font-bold text-red-400 transition hover:bg-red-500/20 active:scale-95 disabled:opacity-50"
                     >
                       ✕ Reject & Refund
                     </button>
@@ -1191,7 +1512,7 @@ function WithdrawalsTab({
             );
           })}
         </ul>
-      </div>
+      )}
     </div>
   );
 }
