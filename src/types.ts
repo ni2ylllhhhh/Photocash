@@ -177,4 +177,5 @@ export interface Withdrawal {
   account: string;
   status: "pending" | "approved" | "rejected";
   createdAt: number;
+  updatedAt?: number;
 }

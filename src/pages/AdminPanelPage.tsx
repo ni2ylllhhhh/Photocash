@@ -997,7 +997,7 @@ function WithdrawalsTab({
   };
 
   const setStatus = async (item: Withdrawal, status: "approved" | "rejected") => {
-    await update(ref(userDb, `withdrawals/${item.id}`), { status });
+    await update(ref(userDb, `withdrawals/${item.id}`), { status, updatedAt: Date.now() });
     if (status === "rejected") {
       await runTransaction(ref(userDb, `users/${item.uid}`), (u) => {
         if (!u) return u;
