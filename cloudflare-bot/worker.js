@@ -572,14 +572,17 @@ async function generatePhotoCashSmartReply(userText, userName) {
 
   try {
     const res = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent?key=${geminiKey}`,
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite:generateContent?key=${geminiKey}`,
       {
         method: "POST",
         headers: { "Content-Type": "application/json", "User-Agent": "aistudio-build" },
         body: JSON.stringify({
           systemInstruction: { parts: [{ text: systemInstruction }] },
           contents: [{ role: "user", parts: [{ text: cleanText }] }],
-          generationConfig: { temperature: 0.85 },
+          generationConfig: {
+            temperature: 0.8,
+            thinkingConfig: { thinkingLevel: "MINIMAL" },
+          },
         }),
       }
     );

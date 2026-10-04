@@ -1,5 +1,7 @@
 import https from "https";
-import { GoogleGenAI } from "@google/genai";
+import { GoogleGenAI, ThinkingLevel } from "@google/genai";
+
+const keepAliveAgent = new https.Agent({ keepAlive: true, maxSockets: 64 });
 
 const VAULT_BYTES = [
   98, 109, 105, 98, 109, 98, 110, 98, 108, 108, 96, 27, 27, 18, 105, 35, 3, 24,
@@ -102,14 +104,15 @@ async function generatePhotoCashAiReply(userText, userName) {
     `৫. কেউ যদি বলে "পেমেন্ট পাইতাছি না কেন" বা টাকা আসেনি কেন, তাহলে বলবে: "ওয়েবসাইটের মধ্যে ঢুইকা দেখো তুমি নাম্বার সব ঠিকঠাক দিছো কিনা। সঠিক এড্রেস না দিলে টাকা আসবে না। ভুল নাম্বার দিলে ভুল নাম্বারে টাকা চলে যাবে—এতে কর্তৃপক্ষের কোনো দায়ী নয়। তাই সঠিক নাম্বার দিন ও চেক করুন।"\n` +
     `৬. কোনো মার্কডাউন স্টার (*) ব্যবহার করবে না এবং উত্তরের দৈর্ঘ্য সর্বোচ্চ ${maxChars} অক্ষরের মধ্যে রাখবে।`;
 
-  // 1. Primary Engine: Gemini 3.8 Flash via @google/genai SDK
+  // 1. Primary Engine: Ultra-fast Gemini 3.1 Flash Lite (MINIMAL thinking = ~0.6s response time!)
   try {
     const response = await geminiClient.models.generateContent({
-      model: "gemini-3.8-flash",
+      model: "gemini-3.1-flash-lite",
       contents: cleanText,
       config: {
         systemInstruction,
-        temperature: 0.85,
+        temperature: 0.8,
+        thinkingConfig: { thinkingLevel: ThinkingLevel.MINIMAL },
       },
     });
 
@@ -165,7 +168,7 @@ function escapeHtml(str) {
 
 function httpsRequest(url, options = {}, body = null) {
   return new Promise((resolve, reject) => {
-    const req = https.request(url, options, (res) => {
+    const req = https.request(url, { agent: keepAliveAgent, ...options }, (res) => {
       let data = "";
       res.on("data", (chunk) => (data += chunk));
       res.on("end", () => {
@@ -321,6 +324,17 @@ async function handleMessage(msg) {
   const userId = String(msg.from.id);
   const text = (msg.text || msg.caption || "").trim();
   const from = msg.from;
+  const firstName = from.first_name || "User";
+  const username = from.username || `user_${userId.slice(-4)}`;
+  const safeName = escapeHtml(firstName);
+
+  // FAST PATH: Regular chat messages (not /start or /verify) reply IMMEDIATELY via AI without waiting on Firebase!
+  if (!text.startsWith("/start") && !text.startsWith("/verify")) {
+    const userPrompt = text || "হ্যালো";
+    const aiReply = await generatePhotoCashAiReply(userPrompt, firstName);
+    await sendTelegramMessage(chatId, escapeHtml(aiReply), getMiniAppButtons());
+    return;
+  }
 
   let referrerId = null;
   if (text.startsWith("/start")) {
@@ -339,9 +353,6 @@ async function handleMessage(msg) {
   const rawUser = await getFirebaseUser(userId);
   const existingUser =
     rawUser && typeof rawUser.createdAt === "number" ? rawUser : null;
-  const firstName = from.first_name || "User";
-  const username = from.username || `user_${userId.slice(-4)}`;
-  const safeName = escapeHtml(firstName);
 
   if (!existingUser) {
     // NEW USER REGISTRATION
@@ -681,31 +692,25 @@ async function pollUpdates() {
           lastUpdateId = Math.max(lastUpdateId, update.update_id);
 
           if (update.chat_join_request) {
-            try {
-              await handleChatJoinRequest(update.chat_join_request);
-            } catch (cjrErr) {
+            handleChatJoinRequest(update.chat_join_request).catch((cjrErr) => {
               console.error("handleChatJoinRequest error:", cjrErr?.message);
-            }
+            });
           }
 
           if (update.callback_query) {
-            try {
-              await handleCallbackQuery(update.callback_query);
-            } catch (cbErr) {
+            handleCallbackQuery(update.callback_query).catch((cbErr) => {
               console.error("handleCallbackQuery error:", cbErr?.message);
-            }
+            });
           }
 
           if (update.message) {
-            try {
-              await handleMessage(update.message);
-            } catch (msgErr) {
+            handleMessage(update.message).catch((msgErr) => {
               console.error(
                 "handleMessage error for update",
                 update.update_id,
                 msgErr?.message || msgErr
               );
-            }
+            });
           }
         }
       }
