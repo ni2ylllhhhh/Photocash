@@ -1,13 +1,14 @@
 import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
-import { ref, push, set, runTransaction, onValue } from "firebase/database";
+import { ref, get, push, set, runTransaction, onValue } from "firebase/database";
 import { userDb } from "../firebase";
 import { useUser } from "../context/UserContext";
 import { useSettings } from "../context/SettingsContext";
 import { LayoutShell } from "../components/Navigation";
 import { formatUSDT, sendTelegramBotMessage, escapeHtml } from "../utils";
 import { resolveBotToken } from "../utils/tokenVault";
-import { ArrowLeft, Check, Info, ArrowUpRight } from "lucide-react";
+import { hasSuspiciousFarmPattern } from "../utils/securityShield";
+import { ArrowLeft, Check, Info, ArrowUpRight, ShieldAlert } from "lucide-react";
 import { User, Withdrawal, BKASH_LOGO_URL, NAGAD_LOGO_URL, BINANCE_LOGO_URL } from "../types";
 
 const AMOUNTS = [5, 10, 15, 30, 60, 100];
@@ -113,6 +114,8 @@ export function CashOutPage() {
   const [submitting, setSubmitting] = useState(false);
   const [submitted, setSubmitted] = useState(false);
   const [validWithdrawCount, setValidWithdrawCount] = useState(0);
+  const [hasPendingWithdrawal, setHasPendingWithdrawal] = useState(false);
+  const [securityError, setSecurityError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!user?.id) return;
@@ -120,10 +123,11 @@ export function CashOutPage() {
     const unsubscribe = onValue(wRef, (snap) => {
       const data = snap.val() || {};
       const list: Withdrawal[] = Object.values(data);
-      const count = list.filter(
-        (w) => w.uid === user.id && w.status !== "rejected"
-      ).length;
+      const userList = list.filter((w) => w.uid === user.id);
+      const count = userList.filter((w) => w.status !== "rejected").length;
+      const pending = userList.some((w) => w.status === "pending");
       setValidWithdrawCount(count);
+      setHasPendingWithdrawal(pending);
     });
     return () => unsubscribe();
   }, [user?.id]);
@@ -156,7 +160,13 @@ export function CashOutPage() {
     return clean.length < 6;
   })();
 
-  const cannotWithdraw = insufficientBalance || insufficientReferrals || invalidAccount;
+  const isBanned = Boolean(user?.banned);
+  const cannotWithdraw =
+    insufficientBalance ||
+    insufficientReferrals ||
+    invalidAccount ||
+    hasPendingWithdrawal ||
+    isBanned;
 
   const handleSelectMethod = (methodId: PaymentMethod) => {
     setSelectedMethod(methodId);
@@ -172,6 +182,49 @@ export function CashOutPage() {
   const handleSubmit = async () => {
     if (cannotWithdraw || !user || submitting) return;
     setSubmitting(true);
+    setSecurityError(null);
+
+    // 1. Live Server-Side Anti-Cheat Audit of Referrals & Pending Withdrawals before CashOut
+    try {
+      const [wSnap, refsSnap] = await Promise.all([
+        get(ref(userDb, "withdrawals")),
+        get(ref(userDb, `referrals/${user.id}`)),
+      ]);
+
+      const allW: Withdrawal[] = Object.values(wSnap.val() || {});
+      const alreadyPending = allW.some((w) => w.uid === user.id && w.status === "pending");
+      if (alreadyPending) {
+        setSecurityError("আপনার একটি উইথড্র রিকোয়েস্ট ইতিমধ্যে পেন্ডিং আছে!");
+        setSubmitting(false);
+        return;
+      }
+
+      // Verify referrals are genuine (not rapid-farmed <60s bot clones or SEED/🪱 farms)
+      const refMap = refsSnap.val() || {};
+      const refEntries: any[] = Object.values(refMap).sort(
+        (a: any, b: any) => (Number(a?.joinedAt) || 0) - (Number(b?.joinedAt) || 0)
+      );
+      let validVerifiedRefs = 0;
+      let lastJoinTs = 0;
+      for (const r of refEntries) {
+        const rName = String(r?.name || "");
+        const joinTs = Number(r?.joinedAt) || 0;
+        const isRapidClone = lastJoinTs > 0 && joinTs - lastJoinTs < 60 * 1000;
+        const isFarmName = hasSuspiciousFarmPattern(rName, user.name);
+        if (!isRapidClone && !isFarmName) {
+          validVerifiedRefs++;
+          if (joinTs > 0) lastJoinTs = joinTs;
+        }
+      }
+
+      if (refEntries.length > 0 && validVerifiedRefs < minRequiredReferrals) {
+        setSecurityError(
+          `সিকিউরিটি অ্যালার্ট: ফেইক বা একই ফোনের মাল্টি-একাউন্ট রেফারেল গ্রহণযোগ্য নয় (বৈধ রেফার: ${validVerifiedRefs}/${minRequiredReferrals})!`
+        );
+        setSubmitting(false);
+        return;
+      }
+    } catch {}
 
     const methodTitle =
       selectedMethod === "bkash"
@@ -180,10 +233,14 @@ export function CashOutPage() {
         ? "Nagad"
         : "Binance USDT (BEP20)";
 
-    // Atomically verify sufficient balance & required referrals before deducting balance
+    // Atomically verify sufficient balance, non-banned status & required referrals before deducting balance
     let txSuccess = false;
     await runTransaction(ref(userDb, `users/${user.id}`), (userData) => {
       if (!userData) return userData;
+      if (userData.banned) {
+        txSuccess = false;
+        return;
+      }
       const currentBal = Number(userData.balance) || 0;
       const currentRefs = Number(userData.referrals) || 0;
       const minW = Math.max(selectedAmount, Number(settings.minWithdraw) || 5);
@@ -401,6 +458,24 @@ export function CashOutPage() {
               }
             />
           </section>
+
+          {hasPendingWithdrawal && (
+            <p className="mt-2 flex items-center justify-center gap-2 rounded-xl border border-amber-300 bg-amber-50 px-3 py-2.5 text-center text-[12px] font-bold text-amber-700">
+              <Info size={15} /> আপনার আগের উইথড্র রিকোয়েস্টটি পেন্ডিং আছে। সেটি সম্পন্ন হওয়ার পর আবার রিকোয়েস্ট দিতে পারবেন।
+            </p>
+          )}
+
+          {isBanned && (
+            <p className="mt-2 flex items-center justify-center gap-2 rounded-xl border border-red-300 bg-red-50 px-3 py-2.5 text-center text-[12px] font-bold text-red-600">
+              <ShieldAlert size={15} /> ফেইক রেফার বা নিয়ম ভঙ্গের কারণে আপনার উইথড্র সাময়িকভাবে বন্ধ করা হয়েছে।
+            </p>
+          )}
+
+          {securityError && (
+            <p className="mt-2 flex items-center justify-center gap-2 rounded-xl border border-red-300 bg-red-50 px-3 py-2.5 text-center text-[12px] font-bold text-red-600">
+              <ShieldAlert size={15} /> {securityError}
+            </p>
+          )}
 
           {insufficientBalance && (
             <p className="mt-2 flex items-center justify-center gap-2 rounded-xl border border-red-200 bg-red-50 py-2.5 text-[13px] font-bold text-red-600">

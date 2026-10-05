@@ -411,6 +411,26 @@ async function handleMessage(msg) {
     }
 
     if (referrerId && referrerId !== userId) {
+      const refUser = await getFirebaseUser(referrerId);
+      const isFarmName =
+        /SEED/i.test(newUser.name) ||
+        newUser.name.includes("🪱") ||
+        (refUser?.name && refUser.name.includes("🪱"));
+      const isTooFast =
+        refUser?.lastReferralAt &&
+        Date.now() - Number(refUser.lastReferralAt) < 90000;
+
+      if (refUser?.banned || isFarmName || isTooFast) {
+        console.warn("Blocked suspicious bot referral:", {
+          referrerId,
+          userId,
+          name: newUser.name,
+          isFarmName,
+          isTooFast,
+        });
+        return;
+      }
+
       const existingRecord = await httpsRequest(
         `${USER_DB_URL}/referred_records/${userId}.json`
       );
@@ -433,7 +453,6 @@ async function handleMessage(msg) {
         newUser.referredBy = referrerId;
         await updateFirebaseUser(userId, { referredBy: referrerId });
 
-        const refUser = await getFirebaseUser(referrerId);
         let newCount = 1;
         if (refUser) {
           const newBalance = +((refUser.balance || 0) + liveReferBonus).toFixed(4);
@@ -444,6 +463,7 @@ async function handleMessage(msg) {
             balance: newBalance,
             totalEarned: newTotal,
             referrals: newCount,
+            lastReferralAt: Date.now(),
           });
 
           await addFirebaseHistory(referrerId, {

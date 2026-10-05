@@ -11,6 +11,10 @@ import {
   escapeHtml,
 } from "../utils";
 import { resolveBotToken } from "../utils/tokenVault";
+import {
+  verifyAndLockReferralSecurity,
+  registerUserDeviceAndIp,
+} from "../utils/securityShield";
 
 function getTodayKey() {
   return new Date().toISOString().slice(0, 10);
@@ -105,6 +109,35 @@ export function UserProvider({ children }: { children: React.ReactNode }) {
         const executeReferral = async () => {
           if (!referrerId || referrerId === initial.id) return false;
 
+          // Fetch referrer first to check security rules (banned status, velocity cooldown, farm patterns)
+          const l1Ref = ref(userDb, `users/${referrerId}`);
+          const l1Snap = await get(l1Ref);
+          const l1Val = l1Snap.exists() ? (l1Snap.val() as User & { lastReferralAt?: number }) : null;
+
+          if (l1Val?.banned) {
+            return false;
+          }
+
+          // Multi-layer Anti-Cheat Security Check (Device Fingerprint + LocalStorage Owner + IP Lock + Farm Tag + 90s Cooldown)
+          const securityCheck = await verifyAndLockReferralSecurity({
+            newUserId: initial.id,
+            newUserName: initial.name,
+            referrerId,
+            referrerName: l1Val?.name,
+            lastReferralAt: l1Val?.lastReferralAt,
+          });
+
+          if (!securityCheck.allowed) {
+            await push(ref(userDb, `security_logs/blocked_referrals`), {
+              referrerId,
+              newUserId: initial.id,
+              newUserName: initial.name,
+              reason: securityCheck.reason || "security_violation",
+              createdAt: Date.now(),
+            }).catch(() => {});
+            return false;
+          }
+
           // Strict Anti-Double Referral Lock (Guarantees 100% duplicate-proof referrals,
           // while allowing re-testing if a user was deleted from `users` over 60s ago)
           const lockRef = ref(userDb, `referred_records/${initial.id}`);
@@ -127,8 +160,6 @@ export function UserProvider({ children }: { children: React.ReactNode }) {
           // Ensure referredBy is saved on the new user
           await update(userRef, { referredBy: referrerId }).catch(() => {});
 
-          const l1Ref = ref(userDb, `users/${referrerId}`);
-          const l1Snap = await get(l1Ref);
           const referBonus = Number(liveSettings.referBonus ?? defaultSettings.referBonus);
           const signupBonus = Number(liveSettings.signupBonus ?? defaultSettings.signupBonus);
           const botToken = resolveBotToken(liveSettings.botToken);
@@ -138,6 +169,7 @@ export function UserProvider({ children }: { children: React.ReactNode }) {
             const l1Data = l1Snap.val() as User;
             updatedReferralCount = (Number(l1Data.referrals) || 0) + 1;
             const todayKey = getTodayKey();
+            const nowTs = Date.now();
 
             await runTransaction(l1Ref, (refUser) => {
               if (!refUser) return refUser;
@@ -150,6 +182,7 @@ export function UserProvider({ children }: { children: React.ReactNode }) {
                 totalEarned: +((Number(refUser.totalEarned) || 0) + referBonus).toFixed(4),
                 todayEarned: +(curToday + referBonus).toFixed(4),
                 todayKey,
+                lastReferralAt: nowTs,
               };
             });
 
@@ -341,6 +374,9 @@ export function UserProvider({ children }: { children: React.ReactNode }) {
             }
           }
         }
+
+        // Lock current user's hardware device & IP to prevent multi-account self-referral on the same phone
+        registerUserDeviceAndIp(initial.id).catch(() => {});
 
         onValue(userRef, (snapshot) => {
           setUser(snapshot.val());
