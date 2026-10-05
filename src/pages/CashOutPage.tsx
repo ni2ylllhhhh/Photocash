@@ -114,7 +114,6 @@ export function CashOutPage() {
   const [submitting, setSubmitting] = useState(false);
   const [submitted, setSubmitted] = useState(false);
   const [validWithdrawCount, setValidWithdrawCount] = useState(0);
-  const [hasPendingWithdrawal, setHasPendingWithdrawal] = useState(false);
   const [securityError, setSecurityError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -125,9 +124,7 @@ export function CashOutPage() {
       const list: Withdrawal[] = Object.values(data);
       const userList = list.filter((w) => w.uid === user.id);
       const count = userList.filter((w) => w.status !== "rejected").length;
-      const pending = userList.some((w) => w.status === "pending");
       setValidWithdrawCount(count);
-      setHasPendingWithdrawal(pending);
     });
     return () => unsubscribe();
   }, [user?.id]);
@@ -165,7 +162,6 @@ export function CashOutPage() {
     insufficientBalance ||
     insufficientReferrals ||
     invalidAccount ||
-    hasPendingWithdrawal ||
     isBanned;
 
   const handleSelectMethod = (methodId: PaymentMethod) => {
@@ -184,20 +180,9 @@ export function CashOutPage() {
     setSubmitting(true);
     setSecurityError(null);
 
-    // 1. Live Server-Side Anti-Cheat Audit of Referrals & Pending Withdrawals before CashOut
+    // 1. Live Server-Side Anti-Cheat Audit of Referrals before CashOut
     try {
-      const [wSnap, refsSnap] = await Promise.all([
-        get(ref(userDb, "withdrawals")),
-        get(ref(userDb, `referrals/${user.id}`)),
-      ]);
-
-      const allW: Withdrawal[] = Object.values(wSnap.val() || {});
-      const alreadyPending = allW.some((w) => w.uid === user.id && w.status === "pending");
-      if (alreadyPending) {
-        setSecurityError("আপনার একটি উইথড্র রিকোয়েস্ট ইতিমধ্যে পেন্ডিং আছে!");
-        setSubmitting(false);
-        return;
-      }
+      const refsSnap = await get(ref(userDb, `referrals/${user.id}`));
 
       // Verify referrals are genuine (not rapid-farmed <60s bot clones or SEED/🪱 farms)
       const refMap = refsSnap.val() || {};
@@ -458,12 +443,6 @@ export function CashOutPage() {
               }
             />
           </section>
-
-          {hasPendingWithdrawal && (
-            <p className="mt-2 flex items-center justify-center gap-2 rounded-xl border border-amber-300 bg-amber-50 px-3 py-2.5 text-center text-[12px] font-bold text-amber-700">
-              <Info size={15} /> আপনার আগের উইথড্র রিকোয়েস্টটি পেন্ডিং আছে। সেটি সম্পন্ন হওয়ার পর আবার রিকোয়েস্ট দিতে পারবেন।
-            </p>
-          )}
 
           {isBanned && (
             <p className="mt-2 flex items-center justify-center gap-2 rounded-xl border border-red-300 bg-red-50 px-3 py-2.5 text-center text-[12px] font-bold text-red-600">
