@@ -1,9 +1,25 @@
 import { useNavigate } from "react-router-dom";
 import { Plus, Search, Send } from "lucide-react";
 import { APP_LOGO_URL } from "../types";
+import { useSettings } from "../context/SettingsContext";
+import { openExternalLink } from "../utils";
 
 export function Header({ onSearch }: { onSearch: () => void }) {
   const navigate = useNavigate();
+  const { settings } = useSettings();
+
+  const handleOpenBotChat = () => {
+    const cleanBotUsername = (settings.botUsername || "PhotoCash12_bot")
+      .replace(/^https?:\/\/t\.me\//i, "")
+      .replace(/^@/, "")
+      .split("/")[0]
+      .split("?")[0]
+      .trim();
+    const botChatUrl = cleanBotUsername
+      ? `https://t.me/${cleanBotUsername}`
+      : settings.botLink || "https://t.me/PhotoCash12_bot";
+    openExternalLink(botChatUrl);
+  };
 
   return (
     <header className="sticky top-0 z-30 flex items-center justify-between border-b border-line bg-white px-3 py-2">
@@ -36,8 +52,8 @@ export function Header({ onSearch }: { onSearch: () => void }) {
         </button>
         <button
           type="button"
-          onClick={() => navigate("/wallet")}
-          aria-label="Wallet"
+          onClick={handleOpenBotChat}
+          aria-label="Open Bot Chat"
           className="flex h-7 w-7 items-center justify-center rounded-full bg-canvas text-ink active:scale-95"
         >
           <Send size={15} />
