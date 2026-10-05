@@ -1,7 +1,7 @@
-import React, { useState, useEffect } from "react";
+import React, { useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { ref, update, remove, onValue } from "firebase/database";
-import { contentDb, userDb } from "../firebase";
+import { ref, update, remove } from "firebase/database";
+import { contentDb } from "../firebase";
 import { Post } from "../types";
 import { useUser } from "../context/UserContext";
 import { useSettings } from "../context/SettingsContext";
@@ -31,19 +31,6 @@ export function PostCard({
   const [copied, setCopied] = useState(false);
   const [showFullCaption, setShowFullCaption] = useState(false);
   const [imageExpanded, setImageExpanded] = useState(false);
-  const [realFollowersCount, setRealFollowersCount] = useState(0);
-
-  useEffect(() => {
-    if (!post.authorId) return;
-    const fRef = ref(userDb, `users/${post.authorId}/followers`);
-    const unsub = onValue(fRef, (snap) => {
-      const val = snap.val();
-      setRealFollowersCount(val && typeof val === "object" ? Object.keys(val).length : 0);
-    });
-    return () => unsub();
-  }, [post.authorId]);
-
-  const totalFollowers = 320 + realFollowersCount;
 
   const likesCount = post.likes ? Object.keys(post.likes).length : 0;
   const starsCount =
@@ -139,7 +126,7 @@ export function PostCard({
             )}
           </div>
           <p className="truncate text-[11px] text-muted">
-            @{post.authorUsername} • <span className="font-semibold text-ink/80">{formatCompactNumber(totalFollowers)} followers</span> • {formatTimeAgo(post.createdAt)}
+            {formatTimeAgo(post.createdAt)}
           </p>
         </div>
 
