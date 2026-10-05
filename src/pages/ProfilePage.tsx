@@ -66,7 +66,7 @@ export function ProfilePage() {
     [allPosts, user?.id]
   );
 
-  const followersCount = user?.followers ? Object.keys(user.followers).length : 0;
+  const followersCount = 320 + (user?.followers ? Object.keys(user.followers).length : 0);
   const followingCount = user?.following ? Object.keys(user.following).length : 0;
 
   const handleAvatarChange = async (file?: File) => {

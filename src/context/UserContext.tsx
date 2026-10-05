@@ -579,18 +579,31 @@ export function UserProvider({ children }: { children: React.ReactNode }) {
   };
 
   const toggleFollow = async (authorId: string) => {
-    if (!user || authorId === user.id) return;
-    const followRef = ref(userDb, `following/${user.id}/${authorId}`);
-    const snap = await get(followRef);
-    if (snap.exists()) {
-      await update(ref(userDb, `following/${user.id}`), { [authorId]: null });
-    } else {
-      await update(ref(userDb, `following/${user.id}`), { [authorId]: true });
-    }
+    if (!user || !authorId || authorId === user.id) return;
+    const currentlyFollowing = Boolean(user.following?.[authorId]);
+    const nextVal = currentlyFollowing ? null : true;
+
+    // Optimistic local state update for instant button response
+    setUser((prev) => {
+      if (!prev) return prev;
+      const nextFollowing = { ...(prev.following || {}) };
+      if (currentlyFollowing) {
+        delete nextFollowing[authorId];
+      } else {
+        nextFollowing[authorId] = true;
+      }
+      return { ...prev, following: nextFollowing };
+    });
+
+    await Promise.all([
+      update(ref(userDb, `users/${user.id}/following`), { [authorId]: nextVal }),
+      update(ref(userDb, `users/${authorId}/followers`), { [user.id]: nextVal }),
+    ]);
   };
 
-  const isFollowing = (_authorId: string) => {
-    return false;
+  const isFollowing = (authorId: string) => {
+    if (!user || !authorId) return false;
+    return Boolean(user.following?.[authorId]);
   };
 
   const dismissReferralMessage = () => {

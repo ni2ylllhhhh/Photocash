@@ -69,7 +69,7 @@ export function UserProfilePage() {
     );
   }
 
-  const followersCount = profile?.followers ? Object.keys(profile.followers).length : 0;
+  const followersCount = 320 + (profile?.followers ? Object.keys(profile.followers).length : 0);
   const followingCount = profile?.following ? Object.keys(profile.following).length : 0;
   const isMe = user?.id === id;
   const following = id ? isFollowing(id) : false;
