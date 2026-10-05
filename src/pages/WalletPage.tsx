@@ -54,15 +54,17 @@ export function WalletPage() {
   return (
     <LayoutShell className="px-3 pt-3">
       <header className="mb-3 flex items-center justify-between">
-        <button
-          type="button"
-          onClick={() => navigate("/")}
-          aria-label="Back"
-          className="flex h-8 w-8 items-center justify-center rounded-full bg-white"
-        >
-          <ArrowLeft size={16} />
-        </button>
-        <h1 className="text-[17px] font-extrabold text-ink">Wallet</h1>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => navigate("/")}
+            aria-label="Back"
+            className="flex h-8 w-8 items-center justify-center rounded-full bg-white"
+          >
+            <ArrowLeft size={16} />
+          </button>
+          <h1 className="text-[17px] font-extrabold text-ink">Wallet</h1>
+        </div>
         <span className="flex items-center gap-1 rounded-full bg-white px-2.5 py-1 text-[12px] font-bold text-ink">
           USDT <ChevronDown size={13} />
         </span>
