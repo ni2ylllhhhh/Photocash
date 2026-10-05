@@ -3,6 +3,7 @@ import { contentDb } from "../firebase";
 import { Post } from "../types";
 import { useUser } from "../context/UserContext";
 import { formatTimeAgo } from "../utils";
+import { VerifiedBadge } from "./VerifiedBadge";
 import { X } from "lucide-react";
 
 const EMOJIS = ["👍", "❤️", "🔥", "👏", "🎉", "😍", "💰", "⚡"];
@@ -74,8 +75,9 @@ export function CommentModal({
                     className="h-7 w-7 rounded-full object-cover"
                   />
                   <div className="min-w-0 flex-1">
-                    <p className="truncate text-[12px] font-semibold text-ink">
-                      {item.name}
+                    <p className="flex items-center gap-1 text-[12px] font-semibold text-ink">
+                      <span className="truncate">{item.name}</span>
+                      <VerifiedBadge className="h-[13px] w-[13px]" />
                     </p>
                     <p className="text-[10px] text-muted">
                       {formatTimeAgo(item.createdAt)}

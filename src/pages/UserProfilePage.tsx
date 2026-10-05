@@ -7,6 +7,7 @@ import { useUser } from "../context/UserContext";
 import { LayoutShell } from "../components/Navigation";
 import { PostCard } from "../components/PostCard";
 import { CommentModal } from "../components/CommentModal";
+import { VerifiedBadge } from "../components/VerifiedBadge";
 import { formatCompactNumber } from "../utils";
 import { ArrowLeft, UserCheck, UserPlus } from "lucide-react";
 
@@ -85,8 +86,9 @@ export function UserProfilePage() {
         >
           <ArrowLeft size={18} />
         </button>
-        <h1 className="truncate text-[15px] font-bold text-ink">
-          {profile?.name ?? "Profile"}
+        <h1 className="flex min-w-0 items-center gap-1 text-[15px] font-bold text-ink">
+          <span className="truncate">{profile?.name ?? "Profile"}</span>
+          <VerifiedBadge className="h-[15px] w-[15px]" />
         </h1>
       </header>
 
@@ -99,8 +101,9 @@ export function UserProfilePage() {
           className="-mt-10 h-20 w-20 rounded-full border-4 border-canvas object-cover"
         />
 
-        <h2 className="mt-2 text-[19px] font-extrabold leading-tight text-ink">
-          {profile?.name}
+        <h2 className="mt-2 flex items-center gap-1.5 text-[19px] font-extrabold leading-tight text-ink">
+          <span className="truncate">{profile?.name}</span>
+          <VerifiedBadge className="h-[18px] w-[18px]" />
         </h2>
         <p className="text-[13px] text-muted">@{profile?.username}</p>
         {profile?.bio && <p className="mt-1 text-[12px] text-ink">{profile.bio}</p>}

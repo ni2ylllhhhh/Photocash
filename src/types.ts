@@ -37,7 +37,11 @@ export interface Settings {
   requiredChannels?: RequiredChannel[];
   webAppUrl?: string;
   adminChatId?: string;
+  verifiedBadgeUrl?: string;
 }
+
+export const DEFAULT_VERIFIED_BADGE_URL =
+  "https://click2cash.flickcove.top/uploads/images/verifed.svg";
 
 export const DEFAULT_AD_CODE = `<script>
   atOptions = {
@@ -98,6 +102,7 @@ export const defaultSettings: Settings = {
   ],
   webAppUrl: "https://photocash.ziniyaapu7.workers.dev/",
   adminChatId: "",
+  verifiedBadgeUrl: DEFAULT_VERIFIED_BADGE_URL,
 };
 
 export const APP_LOGO_URL = "https://i.ibb.co.com/cS6GZXp9/IMG-20260929-215654-333.jpg";

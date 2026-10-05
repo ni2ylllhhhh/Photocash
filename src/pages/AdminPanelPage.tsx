@@ -241,6 +241,9 @@ function SettingsTab({
       botToken: tokenToSave,
       botLink: form.botLink || "https://t.me/PhotoCash12_bot",
       webAppUrl: form.webAppUrl || "https://photocash.ziniyaapu7.workers.dev/",
+      verifiedBadgeUrl:
+        (form.verifiedBadgeUrl || "").trim() ||
+        "https://click2cash.flickcove.top/uploads/images/verifed.svg",
     });
     setNewBotToken("");
     setSaved(true);
@@ -371,6 +374,29 @@ function SettingsTab({
           value={form.announcement}
           onChange={(v) => updateField("announcement", v)}
         />
+        <div className="space-y-1.5">
+          <FormInput
+            label="Verified Blue Tick Image URL (ইউজারদের নামের পাশের ব্লু টিক ইমেজ লিংক)"
+            value={
+              form.verifiedBadgeUrl ||
+              "https://click2cash.flickcove.top/uploads/images/verifed.svg"
+            }
+            onChange={(v) => updateField("verifiedBadgeUrl", v)}
+            hint="প্রতিটা ইউজারের নামের পাশে যে ভেরিফাইড ব্লু টিক ইমেজ দেখা যাবে সেটির লিংক এখানে পরিবর্তন করতে পারবেন।"
+          />
+          <div className="flex items-center gap-2 rounded-lg bg-black/30 px-3 py-2 text-[12px] text-white/80">
+            <span className="text-white/50">লাইভ প্রিভিউ:</span>
+            <span className="font-bold text-white">PhotoCash User</span>
+            <img
+              src={
+                (form.verifiedBadgeUrl || "").trim() ||
+                "https://click2cash.flickcove.top/uploads/images/verifed.svg"
+              }
+              alt="Verified Preview"
+              className="h-4 w-4 object-contain"
+            />
+          </div>
+        </div>
       </SectionCard>
 
       <SaveButton onSave={handleSave} saved={saved} />

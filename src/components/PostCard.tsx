@@ -7,6 +7,7 @@ import { useUser } from "../context/UserContext";
 import { useSettings } from "../context/SettingsContext";
 import { useStarReward } from "../context/StarRewardContext";
 import { formatTimeAgo, formatCompactNumber } from "../utils";
+import { VerifiedBadge } from "./VerifiedBadge";
 import {
   EllipsisVertical,
   Check,
@@ -101,9 +102,10 @@ export function PostCard({
             <button
               type="button"
               onClick={() => navigate(`/u/${post.authorId}`)}
-              className="truncate text-[13px] font-bold text-ink"
+              className="flex min-w-0 items-center gap-1 text-[13px] font-bold text-ink"
             >
-              {post.authorName}
+              <span className="truncate">{post.authorName}</span>
+              <VerifiedBadge className="h-[14px] w-[14px]" />
             </button>
             {!isAuthor && (
               <button

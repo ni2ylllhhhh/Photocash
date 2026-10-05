@@ -6,6 +6,7 @@ import { Post } from "../types";
 import { useUser } from "../context/UserContext";
 import { useSettings } from "../context/SettingsContext";
 import { LayoutShell } from "../components/Navigation";
+import { VerifiedBadge } from "../components/VerifiedBadge";
 import {
   formatUSDT,
   formatCompactNumber,
@@ -135,8 +136,9 @@ export function ProfilePage() {
           onChange={(e) => handleAvatarChange(e.target.files?.[0])}
         />
 
-        <h1 className="mt-2 text-[20px] font-extrabold leading-tight text-ink">
-          {user?.name}
+        <h1 className="mt-2 flex items-center gap-1.5 text-[20px] font-extrabold leading-tight text-ink">
+          <span className="truncate">{user?.name}</span>
+          <VerifiedBadge className="h-[19px] w-[19px]" />
         </h1>
         <p className="text-[13px] text-muted">@{user?.username}</p>
         {user?.bio && <p className="mt-1 text-[12px] text-ink">{user.bio}</p>}

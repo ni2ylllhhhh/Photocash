@@ -4,6 +4,7 @@ import { userDb } from "../firebase";
 import { useUser } from "../context/UserContext";
 import { useSettings } from "../context/SettingsContext";
 import { LayoutShell } from "../components/Navigation";
+import { VerifiedBadge } from "../components/VerifiedBadge";
 import { formatUSDT, formatTimeAgo, openExternalLink } from "../utils";
 import { REFER_BANNER_URL } from "../types";
 import { Check, Copy, Send, CheckCircle2 } from "lucide-react";
@@ -184,8 +185,9 @@ export function ReferPage() {
                     className="h-8 w-8 rounded-full object-cover"
                   />
                   <div className="min-w-0 flex-1">
-                    <p className="truncate text-[12px] font-semibold text-ink">
-                      {item.name}
+                    <p className="flex items-center gap-1 text-[12px] font-semibold text-ink">
+                      <span className="truncate">{item.name}</span>
+                      <VerifiedBadge className="h-[13px] w-[13px]" />
                     </p>
                     <p className="text-[10px] text-muted">
                       {item.username ? `@${item.username} • ` : ""}{formatTimeAgo(item.joinedAt)}

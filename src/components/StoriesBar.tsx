@@ -4,6 +4,7 @@ import { ref, onValue } from "firebase/database";
 import { contentDb } from "../firebase";
 import { Story } from "../types";
 import { useUser } from "../context/UserContext";
+import { VerifiedBadge } from "./VerifiedBadge";
 import { Plus, X } from "lucide-react";
 
 export function StoriesBar() {
@@ -66,8 +67,9 @@ export function StoriesBar() {
               alt=""
               className="absolute left-1.5 top-1.5 h-6 w-6 rounded-full border-2 border-brand-pink object-cover"
             />
-            <span className="absolute inset-x-0 bottom-0 truncate bg-gradient-to-t from-black/80 to-transparent px-1 pb-1 pt-3 text-left text-[9px] font-semibold text-white">
-              {story.authorName}
+            <span className="absolute inset-x-0 bottom-0 flex items-center gap-0.5 bg-gradient-to-t from-black/80 to-transparent px-1 pb-1 pt-3 text-left text-[9px] font-semibold text-white">
+              <span className="truncate">{story.authorName}</span>
+              <VerifiedBadge className="h-[10px] w-[10px]" />
             </span>
           </button>
         ))}
@@ -89,8 +91,9 @@ export function StoriesBar() {
               alt=""
               className="h-8 w-8 rounded-full object-cover"
             />
-            <span className="text-[13px] font-semibold text-white">
-              {activeStory.authorName}
+            <span className="flex items-center gap-1 text-[13px] font-semibold text-white">
+              <span>{activeStory.authorName}</span>
+              <VerifiedBadge className="h-[14px] w-[14px]" />
             </span>
           </div>
           <button
