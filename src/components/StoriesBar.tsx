@@ -67,9 +67,8 @@ export function StoriesBar() {
               alt=""
               className="absolute left-1.5 top-1.5 h-6 w-6 rounded-full border-2 border-brand-pink object-cover"
             />
-            <span className="absolute inset-x-0 bottom-0 flex items-center gap-0.5 bg-gradient-to-t from-black/80 to-transparent px-1 pb-1 pt-3 text-left text-[9px] font-semibold text-white">
-              <span className="truncate">{story.authorName}</span>
-              <VerifiedBadge className="h-[10px] w-[10px]" />
+            <span className="absolute inset-x-0 bottom-0 truncate bg-gradient-to-t from-black/80 to-transparent px-1 pb-1 pt-3 text-left text-[9px] font-semibold text-white">
+              {story.authorName}
             </span>
           </button>
         ))}
