@@ -856,29 +856,101 @@ function ChannelsTab({
 
 function UsersTab() {
   const [users, setUsers] = useState<User[]>([]);
+  const [refMapCounts, setRefMapCounts] = useState<Record<string, number>>({});
   const [search, setSearch] = useState("");
+  const [sortBy, setSortBy] = useState<"newest" | "referrals" | "balance" | "banned">("newest");
+  const [visibleLimit, setVisibleLimit] = useState(60);
 
   useEffect(() => {
     const uRef = ref(userDb, "users");
     const unsubscribe = onValue(uRef, (snap) => {
       const data = snap.val() || {};
-      const list: User[] = Object.values(data);
+      const list: User[] = Object.entries(data)
+        .filter(([, val]: [string, any]) => val && (val.id || val.name))
+        .map(([key, val]: [string, any]) => ({
+          ...val,
+          id: String(val.id || key),
+        }));
       list.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
       setUsers(list);
     });
     return () => unsubscribe();
   }, []);
 
+  useEffect(() => {
+    const rRef = ref(userDb, "referrals");
+    const unsubscribe = onValue(rRef, (snap) => {
+      const data = snap.val() || {};
+      const counts: Record<string, number> = {};
+      for (const [uid, map] of Object.entries(data)) {
+        if (map && typeof map === "object") {
+          counts[uid] = Object.keys(map).length;
+        }
+      }
+      setRefMapCounts(counts);
+    });
+    return () => unsubscribe();
+  }, []);
+
+  const stats = useMemo(() => {
+    const now = Date.now();
+    const oneDayMs = 24 * 60 * 60 * 1000;
+    let todayJoined = 0;
+    let totalRefs = 0;
+    let referredUsers = 0;
+    let bannedCount = 0;
+
+    for (const u of users) {
+      if (u.createdAt && now - u.createdAt <= oneDayMs && u.createdAt <= now + 3600000) {
+        todayJoined++;
+      }
+      const realRefCount = Math.max(Number(u.referrals) || 0, refMapCounts[u.id] || 0);
+      totalRefs += realRefCount;
+      if (u.referredBy) referredUsers++;
+      if (u.banned) bannedCount++;
+    }
+    return {
+      totalUsers: users.length,
+      todayJoined,
+      totalRefs,
+      referredUsers,
+      bannedCount,
+    };
+  }, [users, refMapCounts]);
+
   const filteredUsers = useMemo(() => {
     const q = search.trim().toLowerCase();
-    if (!q) return users;
-    return users.filter(
-      (u) =>
+    let result = users.filter((u) => {
+      if (sortBy === "banned" && !u.banned) return false;
+      if (!q) return true;
+      return (
         u.name?.toLowerCase().includes(q) ||
-        u.id.includes(q) ||
+        String(u.id).includes(q) ||
         u.username?.toLowerCase().includes(q)
-    );
-  }, [users, search]);
+      );
+    });
+
+    if (sortBy === "referrals") {
+      result = [...result].sort((a, b) => {
+        const ra = Math.max(Number(a.referrals) || 0, refMapCounts[a.id] || 0);
+        const rb = Math.max(Number(b.referrals) || 0, refMapCounts[b.id] || 0);
+        return rb - ra;
+      });
+    } else if (sortBy === "balance") {
+      result = [...result].sort(
+        (a, b) => (Number(b.balance) || 0) - (Number(a.balance) || 0)
+      );
+    } else {
+      result = [...result].sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+    }
+
+    return result;
+  }, [users, search, sortBy, refMapCounts]);
+
+  const displayedUsers = useMemo(
+    () => filteredUsers.slice(0, visibleLimit),
+    [filteredUsers, visibleLimit]
+  );
 
   const adjustBalance = async (u: User, delta: number) => {
     await runTransaction(ref(userDb, `users/${u.id}`), (userData) => {
@@ -898,7 +970,8 @@ function UsersTab() {
   };
 
   const setExactReferrals = async (u: User) => {
-    const val = window.prompt(`Set referral count for ${u.name}`, String(u.referrals ?? 0));
+    const currentRefs = Math.max(Number(u.referrals) || 0, refMapCounts[u.id] || 0);
+    const val = window.prompt(`Set referral count for ${u.name}`, String(currentRefs));
     if (val !== null) {
       await update(ref(userDb, `users/${u.id}`), { referrals: Number(val) || 0 });
     }
@@ -906,69 +979,149 @@ function UsersTab() {
 
   return (
     <>
-      <div className="mb-3 flex items-center gap-2 rounded-xl bg-white/5 px-3 py-2">
+      {/* Live User & Referral Counter Summary */}
+      <div className="mb-3 grid grid-cols-2 gap-2 sm:grid-cols-4">
+        <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/10 p-2.5 text-center">
+          <p className="text-[10px] font-semibold text-emerald-300/80">মোট ইউজার (Total Users)</p>
+          <p className="mt-0.5 text-[18px] font-extrabold text-emerald-400">
+            {stats.totalUsers}
+          </p>
+        </div>
+        <div className="rounded-xl border border-sky-500/30 bg-sky-500/10 p-2.5 text-center">
+          <p className="text-[10px] font-semibold text-sky-300/80">২৪ ঘণ্টায় নতুন জয়েন</p>
+          <p className="mt-0.5 text-[18px] font-extrabold text-sky-400">
+            +{stats.todayJoined}
+          </p>
+        </div>
+        <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 p-2.5 text-center">
+          <p className="text-[10px] font-semibold text-amber-300/80">মোট রিয়েল রেফার</p>
+          <p className="mt-0.5 text-[18px] font-extrabold text-amber-400">
+            {stats.totalRefs}
+          </p>
+        </div>
+        <div className="rounded-xl border border-purple-500/30 bg-purple-500/10 p-2.5 text-center">
+          <p className="text-[10px] font-semibold text-purple-300/80">রেফারে আসা ইউজার</p>
+          <p className="mt-0.5 text-[18px] font-extrabold text-purple-400">
+            {stats.referredUsers}
+          </p>
+        </div>
+      </div>
+
+      {/* Search Bar */}
+      <div className="mb-2.5 flex items-center gap-2 rounded-xl bg-white/5 px-3 py-2">
         <Search size={14} className="text-white/40" />
         <input
           value={search}
-          onChange={(e) => setSearch(e.target.value)}
+          onChange={(e) => {
+            setSearch(e.target.value);
+            setVisibleLimit(60);
+          }}
           placeholder="Search by name, username or chat ID"
           className="w-full bg-transparent text-[12px] text-white outline-none"
         />
       </div>
 
-      <p className="mb-2 text-[11px] text-white/40">{filteredUsers.length} users</p>
+      {/* Sort / Filter Tabs */}
+      <div className="mb-3 flex flex-wrap gap-1.5">
+        {(
+          [
+            { id: "newest", label: `সব ইউজার (${users.length})` },
+            { id: "referrals", label: "🔥 বেশি রেফার (Top Refs)" },
+            { id: "balance", label: "💰 বেশি ব্যালেন্স (Top Balance)" },
+            { id: "banned", label: `🚫 ব্যানড (${stats.bannedCount})` },
+          ] as const
+        ).map((tab) => (
+          <button
+            key={tab.id}
+            type="button"
+            onClick={() => {
+              setSortBy(tab.id);
+              setVisibleLimit(60);
+            }}
+            className={`rounded-lg px-2.5 py-1.5 text-[11px] font-bold transition ${
+              sortBy === tab.id
+                ? "bg-emerald-500 text-black"
+                : "bg-white/10 text-white/70 hover:bg-white/15"
+            }`}
+          >
+            {tab.label}
+          </button>
+        ))}
+      </div>
+
+      <p className="mb-2 text-[11px] text-white/50">
+        দেখানো হচ্ছে {displayedUsers.length} / মোট {filteredUsers.length} জন ইউজার
+      </p>
 
       <ul className="space-y-2 pb-6">
-        {filteredUsers.map((u) => (
-          <li key={u.id} className="rounded-xl bg-white/5 p-3">
-            <div className="flex items-center gap-2">
-              <img
-                src={u.photo}
-                alt=""
-                className="h-9 w-9 rounded-full object-cover"
-              />
-              <div className="min-w-0 flex-1">
-                <p className="truncate text-[13px] font-bold">{u.name}</p>
-                <p className="truncate text-[10px] text-white/40">
-                  @{u.username} • ID {u.id} • {formatTimeAgo(u.createdAt || Date.now())}
-                </p>
+        {displayedUsers.map((u) => {
+          const realL1Refs = Math.max(Number(u.referrals) || 0, refMapCounts[u.id] || 0);
+          return (
+            <li key={u.id} className="rounded-xl bg-white/5 p-3">
+              <div className="flex items-center gap-2">
+                <img
+                  src={u.photo}
+                  alt=""
+                  className="h-9 w-9 rounded-full object-cover"
+                />
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-[13px] font-bold">{u.name}</p>
+                  <p className="truncate text-[10px] text-white/40">
+                    @{u.username} • ID {u.id} • {formatTimeAgo(u.createdAt || Date.now())}
+                    {u.referredBy ? ` • RefBy: ${u.referredBy}` : ""}
+                  </p>
+                </div>
+                {u.banned && (
+                  <span className="rounded-full bg-red-500/20 px-2 py-0.5 text-[10px] font-bold text-red-400">
+                    banned
+                  </span>
+                )}
               </div>
-              {u.banned && (
-                <span className="rounded-full bg-red-500/20 px-2 py-0.5 text-[10px] font-bold text-red-400">
-                  banned
-                </span>
-              )}
-            </div>
 
-            <div className="mt-2 grid grid-cols-4 gap-1 text-center text-[10px]">
-              <MiniStat label="Balance" value={formatUSDT(u.balance || 0, 3)} />
-              <MiniStat label="Posts" value={String(u.postCount || 0)} />
-              <MiniStat label="L1 Refs" value={String(u.referrals || 0)} />
-              <MiniStat label="L2 Refs" value={String(u.l2Referrals || 0)} />
-            </div>
+              <div className="mt-2 grid grid-cols-4 gap-1 text-center text-[10px]">
+                <MiniStat label="Balance" value={formatUSDT(u.balance || 0, 3)} />
+                <MiniStat label="Posts" value={String(u.postCount || 0)} />
+                <MiniStat label="L1 Refs" value={String(realL1Refs)} />
+                <MiniStat label="L2 Refs" value={String(u.l2Referrals || 0)} />
+              </div>
 
-            <div className="mt-2 flex flex-wrap gap-1.5">
-              <ActionPill onClick={() => adjustBalance(u, 1)}>+1</ActionPill>
-              <ActionPill onClick={() => adjustBalance(u, -1)}>-1</ActionPill>
-              <ActionPill onClick={() => setExactBalance(u)}>Set balance</ActionPill>
-              <ActionPill onClick={() => setExactReferrals(u)}>Set referrals</ActionPill>
-              <ActionPill onClick={() => update(ref(userDb, `users/${u.id}`), { banned: !u.banned })}>
-                {u.banned ? "Unban" : "Ban"}
-              </ActionPill>
-              <ActionPill
-                danger
-                onClick={() => {
-                  if (window.confirm(`Delete ${u.name}?`)) {
-                    remove(ref(userDb, `users/${u.id}`));
+              <div className="mt-2 flex flex-wrap gap-1.5">
+                <ActionPill onClick={() => adjustBalance(u, 1)}>+1</ActionPill>
+                <ActionPill onClick={() => adjustBalance(u, -1)}>-1</ActionPill>
+                <ActionPill onClick={() => setExactBalance(u)}>Set balance</ActionPill>
+                <ActionPill onClick={() => setExactReferrals(u)}>Set referrals</ActionPill>
+                <ActionPill
+                  onClick={() =>
+                    update(ref(userDb, `users/${u.id}`), { banned: !u.banned })
                   }
-                }}
-              >
-                Delete
-              </ActionPill>
-            </div>
-          </li>
-        ))}
+                >
+                  {u.banned ? "Unban" : "Ban"}
+                </ActionPill>
+                <ActionPill
+                  danger
+                  onClick={() => {
+                    if (window.confirm(`Delete ${u.name}?`)) {
+                      remove(ref(userDb, `users/${u.id}`));
+                    }
+                  }}
+                >
+                  Delete
+                </ActionPill>
+              </div>
+            </li>
+          );
+        })}
       </ul>
+
+      {visibleLimit < filteredUsers.length && (
+        <button
+          type="button"
+          onClick={() => setVisibleLimit((prev) => prev + 60)}
+          className="mb-8 w-full rounded-xl bg-white/10 py-2.5 text-[12px] font-bold text-white hover:bg-white/15"
+        >
+          আরো ইউজার দেখুন ({filteredUsers.length - visibleLimit} জন বাকি)
+        </button>
+      )}
     </>
   );
 }

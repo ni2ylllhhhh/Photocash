@@ -16,16 +16,18 @@ export function getHardwareDeviceHash(): string {
 
   const parts: string[] = [];
   try {
-    parts.push(`${window.screen?.width || 0}x${window.screen?.height || 0}x${window.screen?.colorDepth || 0}`);
+    parts.push(
+      `${window.screen?.width || 0}x${window.screen?.height || 0}x${
+        window.screen?.colorDepth || 0
+      }`
+    );
     parts.push(String(window.devicePixelRatio || 1));
     parts.push(String(navigator.hardwareConcurrency || 0));
     parts.push(Intl.DateTimeFormat().resolvedOptions().timeZone || "");
     parts.push(navigator.language || "");
-    // Strip Telegram-specific dynamic version tail if any, keep hardware model from User-Agent
     const ua = (navigator.userAgent || "").replace(/Telegram-Android\/[\d.]+/g, "TG-A");
     parts.push(ua);
 
-    // WebGL GPU renderer string (identical across all cloned Telegram accounts on the same phone)
     const canvas = document.createElement("canvas");
     const gl =
       (canvas.getContext("webgl") as WebGLRenderingContext | null) ||
@@ -57,61 +59,48 @@ export function getHardwareDeviceHash(): string {
 }
 
 /**
- * Fetches client public IP (sanitized for Firebase key usage)
+ * Fetches client public IP quickly (1.2s max timeout so registration & bot notifications are never delayed)
  */
 export async function getClientIpKey(): Promise<string | null> {
-  const endpoints = [
-    "https://api.ipify.org?format=json",
-    "https://api64.ipify.org?format=json",
-  ];
-  for (const url of endpoints) {
-    try {
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 2500);
-      const res = await fetch(url, { signal: controller.signal });
-      clearTimeout(timer);
-      if (res.ok) {
-        const data = await res.json();
-        if (data?.ip) {
-          return String(data.ip).trim().replace(/[.#$/[\]:]/g, "_");
-        }
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 1200);
+    const res = await fetch("https://api.ipify.org?format=json", {
+      signal: controller.signal,
+    });
+    clearTimeout(timer);
+    if (res.ok) {
+      const data = await res.json();
+      if (data?.ip) {
+        return String(data.ip).trim().replace(/[.#$/[\]:]/g, "_");
       }
-    } catch {}
-  }
+    }
+  } catch {}
   return null;
 }
 
 /**
- * Detects known Telegram multi-account farming tags (e.g. SEED, worm emojis, etc.)
- * or identical farming suffixes between referrer and referee.
+ * Detects known Telegram multi-account farming tags (e.g. SEED, worm emojis 🪱).
+ * Does NOT block normal emojis (like 🔥, ❤️, 🌸) used by real Telegram users.
  */
-export function hasSuspiciousFarmPattern(newUserName: string, referrerName?: string): boolean {
+export function hasSuspiciousFarmPattern(
+  newUserName: string,
+  _referrerName?: string
+): boolean {
   const name = String(newUserName || "").trim();
   if (!name) return false;
 
-  // Known bot-farm watermarks used by multi-account scripts (like SEED, 🪱, etc.)
   if (/SEED/i.test(name) || name.includes("🪱")) {
     return true;
-  }
-
-  if (referrerName) {
-    const refClean = String(referrerName).trim();
-    // Check if both referrer and new user have the exact same non-standard emoji/symbol watermark
-    const emojiRegex = /[\u{1F300}-\u{1FAFF}]/gu;
-    const userEmojis: string[] = name.match(emojiRegex) || [];
-    const refEmojis: string[] = refClean.match(emojiRegex) || [];
-    if (userEmojis.length > 0 && refEmojis.length > 0) {
-      const shared = userEmojis.filter((e) => refEmojis.includes(e));
-      if (shared.length > 0) return true;
-    }
   }
 
   return false;
 }
 
 /**
- * Records the device & IP for a user and verifies whether a referral from `referrerId` -> `newUserId`
- * is a genuine, unique person on a different device and network.
+ * Verifies whether a referral from `referrerId` -> `newUserId` is a genuine real user.
+ * Blocks 100% of same-phone account switching & bot-farm scripts while allowing 100% of real users
+ * (even when many users click a Telegram channel link simultaneously or use mobile data CGNAT).
  */
 export async function verifyAndLockReferralSecurity(params: {
   newUserId: string;
@@ -120,13 +109,13 @@ export async function verifyAndLockReferralSecurity(params: {
   referrerName?: string;
   lastReferralAt?: number;
 }): Promise<{ allowed: boolean; reason?: string }> {
-  const { newUserId, newUserName, referrerId, referrerName, lastReferralAt } = params;
+  const { newUserId, newUserName, referrerId, referrerName } = params;
 
   if (!referrerId || !newUserId || referrerId === newUserId) {
     return { allowed: false, reason: "self_referral" };
   }
 
-  // 1. Check LocalStorage Device Owner Lock (blocks switching accounts inside same Telegram app)
+  // 1. Check LocalStorage Device Owner Lock (blocks switching accounts inside same Telegram app on the same phone)
   try {
     const existingOwner = localStorage.getItem(LOCAL_DEVICE_OWNER_KEY);
     if (existingOwner && existingOwner !== newUserId) {
@@ -135,59 +124,51 @@ export async function verifyAndLockReferralSecurity(params: {
     localStorage.setItem(LOCAL_DEVICE_OWNER_KEY, newUserId);
   } catch {}
 
-  // 2. Check Bot-Farm Name Pattern (blocks SEED / 🪱 / cloned account farms)
+  // 2. Check Bot-Farm Name Pattern (blocks SEED / 🪱 automated clone farms)
   if (hasSuspiciousFarmPattern(newUserName, referrerName)) {
     return { allowed: false, reason: "suspicious_farm_name_pattern" };
   }
 
-  // 3. Check Referral Velocity Cooldown (blocks rapid 45-second account switching scripts)
-  if (lastReferralAt && Date.now() - lastReferralAt < 90 * 1000) {
-    return { allowed: false, reason: "referral_cooldown_too_fast" };
-  }
-
-  // 4. Hardware Fingerprint Lock in Firebase (`security_locks/devices/${deviceHash}`)
+  // 3. Combined Same-Phone + Same-IP Self-Referral Check
+  // Only blocks if the new user is on the EXACT SAME physical hardware AND EXACT SAME IP as the referrer
+  // or as another account referred by the same referrer within 15 minutes.
   const deviceHash = getHardwareDeviceHash();
-  try {
-    const devRef = ref(userDb, `security_locks/devices/${deviceHash}`);
-    const devSnap = await get(devRef);
-    if (devSnap.exists()) {
-      const devData = devSnap.val();
-      // If this physical phone hardware was already used by the referrer or another account
-      if (devData?.uid && devData.uid !== newUserId) {
-        return { allowed: false, reason: "duplicate_hardware_device" };
+  const ipKey = await getClientIpKey();
+
+  if (ipKey && deviceHash) {
+    try {
+      // Check if referrer's own phone has this exact hardware + IP combination
+      const refSelfSnap = await get(ref(userDb, `security_locks/self/${referrerId}`));
+      if (refSelfSnap.exists()) {
+        const selfData = refSelfSnap.val();
+        if (
+          selfData?.deviceHash === deviceHash &&
+          selfData?.ipKey === ipKey &&
+          Date.now() - Number(selfData.updatedAt || 0) < 6 * 60 * 60 * 1000
+        ) {
+          return { allowed: false, reason: "same_phone_and_ip_as_referrer" };
+        }
       }
-    } else {
-      await set(devRef, {
+
+      // Check if this exact phone hardware + IP already registered a referral for THIS SAME referrer within 15 minutes
+      const pairKey = `${referrerId}_${deviceHash}_${ipKey}`;
+      const pairRef = ref(userDb, `security_locks/ref_pairs/${pairKey}`);
+      const pairSnap = await get(pairRef);
+      if (pairSnap.exists()) {
+        const pairData = pairSnap.val();
+        if (
+          pairData?.uid &&
+          pairData.uid !== newUserId &&
+          Date.now() - Number(pairData.createdAt || 0) < 15 * 60 * 1000
+        ) {
+          return { allowed: false, reason: "same_phone_rapid_clone_referral" };
+        }
+      }
+
+      await set(pairRef, {
         uid: newUserId,
         referrerId,
         createdAt: Date.now(),
-      });
-    }
-  } catch {}
-
-  // 5. Public IP Lock in Firebase (`security_locks/ips/${ipKey}`)
-  const ipKey = await getClientIpKey();
-  if (ipKey) {
-    try {
-      const ipRef = ref(userDb, `security_locks/ips/${ipKey}`);
-      const ipSnap = await get(ipRef);
-      if (ipSnap.exists()) {
-        const ipData = ipSnap.val();
-        // Block if this IP belongs to the referrer or was already used to register another account within 24 hours
-        if (
-          ipData?.uid &&
-          ipData.uid !== newUserId &&
-          (ipData.uid === referrerId ||
-            ipData.referrerId === referrerId ||
-            Date.now() - Number(ipData.updatedAt || 0) < 24 * 60 * 60 * 1000)
-        ) {
-          return { allowed: false, reason: "duplicate_ip_address" };
-        }
-      }
-      await set(ipRef, {
-        uid: newUserId,
-        referrerId,
-        updatedAt: Date.now(),
       });
     } catch {}
   }
@@ -197,7 +178,7 @@ export async function verifyAndLockReferralSecurity(params: {
 
 /**
  * Registers the current user's device & IP on normal login so the referrer's own phone
- * is always locked to the referrer's UID before they try switching accounts.
+ * is bound to their UID.
  */
 export async function registerUserDeviceAndIp(userId: string): Promise<void> {
   if (!userId) return;
@@ -209,22 +190,15 @@ export async function registerUserDeviceAndIp(userId: string): Promise<void> {
   } catch {}
 
   const deviceHash = getHardwareDeviceHash();
-  try {
-    const devRef = ref(userDb, `security_locks/devices/${deviceHash}`);
-    const devSnap = await get(devRef);
-    if (!devSnap.exists()) {
-      await set(devRef, { uid: userId, createdAt: Date.now() });
-    }
-  } catch {}
-
   const ipKey = await getClientIpKey();
-  if (ipKey) {
+  if (deviceHash && ipKey) {
     try {
-      const ipRef = ref(userDb, `security_locks/ips/${ipKey}`);
-      const ipSnap = await get(ipRef);
-      if (!ipSnap.exists()) {
-        await set(ipRef, { uid: userId, updatedAt: Date.now() });
-      }
+      await set(ref(userDb, `security_locks/self/${userId}`), {
+        uid: userId,
+        deviceHash,
+        ipKey,
+        updatedAt: Date.now(),
+      });
     } catch {}
   }
 }

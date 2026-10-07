@@ -184,27 +184,21 @@ export function CashOutPage() {
     try {
       const refsSnap = await get(ref(userDb, `referrals/${user.id}`));
 
-      // Verify referrals are genuine (not rapid-farmed <60s bot clones or SEED/🪱 farms)
+      // Verify referrals are genuine (not SEED/🪱 bot-farms)
       const refMap = refsSnap.val() || {};
-      const refEntries: any[] = Object.values(refMap).sort(
-        (a: any, b: any) => (Number(a?.joinedAt) || 0) - (Number(b?.joinedAt) || 0)
-      );
+      const refEntries: any[] = Object.values(refMap);
       let validVerifiedRefs = 0;
-      let lastJoinTs = 0;
       for (const r of refEntries) {
         const rName = String(r?.name || "");
-        const joinTs = Number(r?.joinedAt) || 0;
-        const isRapidClone = lastJoinTs > 0 && joinTs - lastJoinTs < 60 * 1000;
         const isFarmName = hasSuspiciousFarmPattern(rName, user.name);
-        if (!isRapidClone && !isFarmName) {
+        if (!isFarmName) {
           validVerifiedRefs++;
-          if (joinTs > 0) lastJoinTs = joinTs;
         }
       }
 
       if (refEntries.length > 0 && validVerifiedRefs < minRequiredReferrals) {
         setSecurityError(
-          `সিকিউরিটি অ্যালার্ট: ফেইক বা একই ফোনের মাল্টি-একাউন্ট রেফারেল গ্রহণযোগ্য নয় (বৈধ রেফার: ${validVerifiedRefs}/${minRequiredReferrals})!`
+          `সিকিউরিটি অ্যালার্ট: ফেইক বা বট-ফার্ম রেফারেল গ্রহণযোগ্য নয় (বৈধ রেফার: ${validVerifiedRefs}/${minRequiredReferrals})!`
         );
         setSubmitting(false);
         return;
