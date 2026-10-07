@@ -386,7 +386,23 @@ export function UserProvider({ children }: { children: React.ReactNode }) {
         if (isFullyRegistered && existingVal) {
           // EXISTING REGISTERED USER
           const currentData = existingVal as User;
-          const updates: Partial<User> = {};
+          const nowTs = Date.now();
+          const detectedLang =
+            window.Telegram?.WebApp?.initDataUnsafe?.user?.language_code ||
+            currentData.language ||
+            (typeof navigator !== "undefined" ? navigator.language?.split("-")[0] : "en") ||
+            "en";
+          const updates: Partial<User> = {
+            user_id: initial.id,
+            first_name:
+              window.Telegram?.WebApp?.initDataUnsafe?.user?.first_name ||
+              currentData.first_name ||
+              (currentData.name || initial.name).split(" ")[0],
+            language: detectedLang,
+            joined_at: currentData.joined_at || currentData.createdAt || nowTs,
+            last_active: nowTs,
+            is_blocked: false,
+          };
           if (!currentData.photo) updates.photo = initial.photo;
           if (!currentData.name) updates.name = initial.name;
           if (!currentData.username) updates.username = initial.username;
@@ -427,11 +443,22 @@ export function UserProvider({ children }: { children: React.ReactNode }) {
             liveSettings.signupBonus ?? defaultSettings.signupBonus
           );
           const alreadyVerified = Boolean(existingVal?.channelsVerified);
+          const nowTs = Date.now();
+          const detectedLang =
+            window.Telegram?.WebApp?.initDataUnsafe?.user?.language_code ||
+            (typeof navigator !== "undefined" ? navigator.language?.split("-")[0] : "en") ||
+            "en";
 
           const newUser: User = {
             id: initial.id,
+            user_id: initial.id,
             name: initial.name,
+            first_name:
+              window.Telegram?.WebApp?.initDataUnsafe?.user?.first_name ||
+              initial.name.split(" ")[0] ||
+              "User",
             username: initial.username,
+            language: detectedLang,
             photo: initial.photo,
             bio: "",
             balance: signupBonus,
@@ -444,12 +471,15 @@ export function UserProvider({ children }: { children: React.ReactNode }) {
             l3Referrals: 0,
             referredBy: referrerId || null,
             binanceId: "",
-            createdAt: Date.now(),
-            lastAccrual: Date.now(),
+            createdAt: nowTs,
+            joined_at: nowTs,
+            last_active: nowTs,
+            is_blocked: false,
+            lastAccrual: nowTs,
             ...(alreadyVerified
               ? {
                   channelsVerified: true,
-                  channelsVerifiedAt: existingVal?.channelsVerifiedAt || Date.now(),
+                  channelsVerifiedAt: existingVal?.channelsVerifiedAt || nowTs,
                 }
               : {}),
           };

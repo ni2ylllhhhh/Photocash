@@ -137,6 +137,50 @@ export interface User {
   channelsVerifiedAt?: number;
   followers?: Record<string, boolean>;
   following?: Record<string, boolean>;
+  user_id?: string;
+  first_name?: string;
+  language?: string;
+  joined_at?: number;
+  last_active?: number;
+  is_blocked?: boolean;
+}
+
+export type BroadcastMessageType = "text" | "photo" | "video" | "document";
+
+export type BroadcastTargetType =
+  | "all"
+  | "active"
+  | "joined_after"
+  | "specific_ids"
+  | "language_group";
+
+export interface BroadcastButton {
+  text: string;
+  url: string;
+  isWebApp?: boolean;
+}
+
+export interface BroadcastJob {
+  id: string;
+  serialNumber: number;
+  messageType: BroadcastMessageType;
+  text: string;
+  mediaUrl?: string;
+  buttons?: BroadcastButton[];
+  buttonColumns?: 1 | 2;
+  targetType: BroadcastTargetType;
+  targetJoinedAfter?: number;
+  targetLanguageOrGroup?: string;
+  targetSpecificIds?: string;
+  totalUsers: number;
+  sent: number;
+  failed: number;
+  blockedCount?: number;
+  lastProcessedIndex: number;
+  targetUserIds: string[];
+  status: "running" | "paused" | "completed" | "stopped";
+  createdAt: number;
+  updatedAt: number;
 }
 
 export interface Post {

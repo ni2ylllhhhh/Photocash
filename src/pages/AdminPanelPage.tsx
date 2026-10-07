@@ -5,6 +5,7 @@ import { Settings, User, Post, Withdrawal, defaultSettings } from "../types";
 import { useSettings } from "../context/SettingsContext";
 import { formatUSDT, formatTimeAgo, sendTelegramBotMessage } from "../utils";
 import { resolveBotToken, encryptBotToken } from "../utils/tokenVault";
+import { AdminBroadcastTab } from "../components/AdminBroadcastTab";
 import {
   Lock,
   LogOut,
@@ -52,7 +53,12 @@ export function AdminPanelPage() {
     }
   });
   const [errorMsg, setErrorMsg] = useState("");
-  const [activeTab, setActiveTab] = useState("settings");
+  const [activeTab, setActiveTab] = useState(() => {
+    if (typeof window !== "undefined" && window.location.pathname.includes("broadcast")) {
+      return "broadcast";
+    }
+    return "settings";
+  });
 
   useEffect(() => {
     const session = sessionStorage.getItem(SESSION_KEY);
@@ -140,6 +146,7 @@ export function AdminPanelPage() {
 
   const tabs = [
     { key: "settings", label: "Rewards & Tiers", Icon: SettingsIcon },
+    { key: "broadcast", label: "📢 Broadcast", Icon: Megaphone },
     { key: "channels", label: "Telegram Channels (ভেরিফিকেশন)", Icon: Send },
     { key: "ads", label: "Ads & Bot", Icon: Megaphone },
     { key: "users", label: "Users", Icon: UsersIcon },
@@ -187,6 +194,7 @@ export function AdminPanelPage() {
         {activeTab === "settings" && (
           <SettingsTab settings={settings} save={saveSettings} />
         )}
+        {activeTab === "broadcast" && <AdminBroadcastTab settings={settings} />}
         {activeTab === "channels" && (
           <ChannelsTab settings={settings} save={saveSettings} />
         )}
