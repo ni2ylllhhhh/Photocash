@@ -1,4 +1,11 @@
-import React, { createContext, useContext, useEffect, useRef, useState } from "react";
+import React, {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 import { ref, get, set, update, onValue, runTransaction, push } from "firebase/database";
 import { userDb, contentDb } from "../firebase";
 import { User, Settings, defaultSettings } from "../types";
@@ -50,19 +57,285 @@ export function UserProvider({ children }: { children: React.ReactNode }) {
   const [loading, setLoading] = useState(true);
   const [referralStatusMessage, setReferralStatusMessage] = useState<string | null>(null);
   const initialized = useRef(false);
-  const userIdRef = useRef<string | null>(null);
+  const claimingReferralRef = useRef(false);
+
+  /**
+   * Credits the referral ONLY when the referred user has joined the required channels
+   * (or if forceChannelJoin is disabled by admin).
+   */
+  const claimVerifiedReferral = useCallback(
+    async (
+      currentUser: {
+        id: string;
+        name: string;
+        username: string;
+        photo: string;
+        referredBy?: string | null;
+        channelsVerified?: boolean;
+      },
+      explicitReferrerId?: string | null
+    ): Promise<boolean> => {
+      if (claimingReferralRef.current) return false;
+
+      const rawRef = explicitReferrerId || currentUser.referredBy || extractReferrerId();
+      if (!rawRef) return false;
+
+      let targetReferrerId = String(rawRef).trim();
+      const digitsMatch = targetReferrerId.match(/\d{5,}/);
+      if (digitsMatch) {
+        targetReferrerId = digitsMatch[0];
+      }
+
+      if (!targetReferrerId || targetReferrerId === currentUser.id) return false;
+
+      claimingReferralRef.current = true;
+      try {
+        const liveSettingsSnap = await get(ref(contentDb, "settings")).catch(() => null);
+        const liveSettings: Settings = {
+          ...defaultSettings,
+          ...settings,
+          ...(liveSettingsSnap && liveSettingsSnap.exists()
+            ? liveSettingsSnap.val()
+            : {}),
+        };
+
+        const forceJoin = Boolean(liveSettings.forceChannelJoin ?? true);
+
+        // STRICT RULE: If channel verification is enabled, the referral CANNOT be counted
+        // or rewarded until the referred user has joined and verified the required channels!
+        if (forceJoin && !currentUser.channelsVerified) {
+          return false;
+        }
+
+        // Check if already credited in /referrals or /referred_records
+        const [existingRefEntrySnap, lockSnap, l1Snap] = await Promise.all([
+          get(ref(userDb, `referrals/${targetReferrerId}/${currentUser.id}`)),
+          get(ref(userDb, `referred_records/${currentUser.id}`)),
+          get(ref(userDb, `users/${targetReferrerId}`)),
+        ]);
+
+        if (existingRefEntrySnap.exists() || lockSnap.exists()) {
+          try {
+            sessionStorage.removeItem("pc_pending_ref");
+            localStorage.removeItem("pc_pending_ref");
+          } catch {}
+          return false;
+        }
+
+        const l1Ref = ref(userDb, `users/${targetReferrerId}`);
+        const l1Val = l1Snap.exists()
+          ? (l1Snap.val() as User & { lastReferralAt?: number })
+          : null;
+
+        if (l1Val?.banned) {
+          return false;
+        }
+
+        // Multi-layer Anti-Cheat Security Check (Same-phone LocalStorage Owner + Same-Phone/IP pair + Bot-Farm Tag)
+        const securityCheck = await verifyAndLockReferralSecurity({
+          newUserId: currentUser.id,
+          newUserName: currentUser.name,
+          referrerId: targetReferrerId,
+          referrerName: l1Val?.name,
+        });
+
+        if (!securityCheck.allowed) {
+          await push(ref(userDb, `security_logs/blocked_referrals`), {
+            referrerId: targetReferrerId,
+            newUserId: currentUser.id,
+            newUserName: currentUser.name,
+            reason: securityCheck.reason || "security_violation",
+            createdAt: Date.now(),
+          }).catch(() => {});
+          return false;
+        }
+
+        // Atomic lock on referred_records/${currentUser.id} to guarantee 100% duplicate-proof referrals
+        const lockRef = ref(userDb, `referred_records/${currentUser.id}`);
+        let lockAcquired = false;
+        await runTransaction(lockRef, (currentLock) => {
+          if (currentLock) {
+            lockAcquired = false;
+            return; // Abort transaction if already credited
+          }
+          lockAcquired = true;
+          return {
+            referrerId: targetReferrerId,
+            newUserId: currentUser.id,
+            newUserName: currentUser.name,
+            channelsVerified: true,
+            creditedAt: Date.now(),
+            messageSent: true,
+          };
+        });
+
+        if (!lockAcquired) {
+          return false;
+        }
+
+        // Ensure referredBy is saved on the user
+        await update(ref(userDb, `users/${currentUser.id}`), {
+          referredBy: targetReferrerId,
+        }).catch(() => {});
+
+        // 1. Add to Referrer's Referrals List first so we can verify the exact real count
+        await set(ref(userDb, `referrals/${targetReferrerId}/${currentUser.id}`), {
+          id: currentUser.id,
+          name: currentUser.name,
+          username: currentUser.username,
+          photo: currentUser.photo,
+          channelsVerified: true,
+          joinedAt: Date.now(),
+        });
+
+        const allRefsSnap = await get(ref(userDb, `referrals/${targetReferrerId}`)).catch(
+          () => null
+        );
+        const exactListCount =
+          allRefsSnap && allRefsSnap.exists()
+            ? Object.keys(allRefsSnap.val() || {}).length
+            : 1;
+
+        const referBonus = Number(liveSettings.referBonus ?? defaultSettings.referBonus);
+        const signupBonus = Number(
+          liveSettings.signupBonus ?? defaultSettings.signupBonus
+        );
+        const botToken = resolveBotToken(liveSettings.botToken);
+        const webAppUrl =
+          liveSettings.webAppUrl || "https://photocash.ziniyaapu7.workers.dev";
+        let updatedReferralCount = exactListCount;
+
+        if (l1Snap.exists() && l1Snap.val()?.createdAt) {
+          const l1Data = l1Snap.val() as User;
+          const todayKey = getTodayKey();
+          const nowTs = Date.now();
+
+          await runTransaction(l1Ref, (refUser) => {
+            if (!refUser) return refUser;
+            const curToday =
+              refUser.todayKey === todayKey ? Number(refUser.todayEarned) || 0 : 0;
+            const nextRefCount = Math.max(
+              (Number(refUser.referrals) || 0) + 1,
+              exactListCount
+            );
+            updatedReferralCount = nextRefCount;
+            return {
+              ...refUser,
+              referrals: nextRefCount,
+              balance: +((Number(refUser.balance) || 0) + referBonus).toFixed(4),
+              totalEarned: +((Number(refUser.totalEarned) || 0) + referBonus).toFixed(4),
+              todayEarned: +(curToday + referBonus).toFixed(4),
+              todayKey,
+              lastReferralAt: nowTs,
+            };
+          });
+
+          // L2 & L3 ancestor increment
+          const l2Id = l1Data.referredBy;
+          if (l2Id && l2Id !== currentUser.id && l2Id !== targetReferrerId) {
+            const l2Ref = ref(userDb, `users/${l2Id}`);
+            const l2Snap = await get(l2Ref);
+            if (l2Snap.exists()) {
+              const l2Data = l2Snap.val() as User;
+              await runTransaction(l2Ref, (u2) => {
+                if (!u2) return u2;
+                return { ...u2, l2Referrals: (u2.l2Referrals || 0) + 1 };
+              });
+
+              const l3Id = l2Data.referredBy;
+              if (
+                l3Id &&
+                l3Id !== currentUser.id &&
+                l3Id !== targetReferrerId &&
+                l3Id !== l2Id
+              ) {
+                const l3Ref = ref(userDb, `users/${l3Id}`);
+                await runTransaction(l3Ref, (u3) => {
+                  if (!u3) return u3;
+                  return { ...u3, l3Referrals: (u3.l3Referrals || 0) + 1 };
+                });
+              }
+            }
+          }
+        } else {
+          // Initialize referrer profile if not previously opened
+          await set(l1Ref, {
+            id: targetReferrerId,
+            name: "Telegram User",
+            username: `user_${targetReferrerId.slice(-4)}`,
+            photo: generateAvatar("User", targetReferrerId),
+            bio: "",
+            balance: referBonus,
+            totalEarned: referBonus,
+            todayEarned: referBonus,
+            todayKey: getTodayKey(),
+            postCount: 0,
+            referrals: exactListCount,
+            l2Referrals: 0,
+            l3Referrals: 0,
+            createdAt: Date.now(),
+            lastAccrual: Date.now(),
+          });
+        }
+
+        // Add to Referrer's Transaction History
+        await push(ref(userDb, `users/${targetReferrerId}/history`), {
+          type: "referral_l1",
+          amount: referBonus,
+          note: `Verified referral bonus — ${currentUser.name}`,
+          createdAt: Date.now(),
+        });
+
+        const safeName = escapeHtml(currentUser.name);
+
+        // 1. Send automated Telegram message to the REFERRER (যে রেফার করেছে) - strictly ONCE
+        await sendTelegramBotMessage(
+          botToken,
+          targetReferrerId,
+          `🎉 <b>অভিনন্দন! নতুন ভেরিফাইড রেফারেল জয়েন করেছে!</b>\n\n` +
+            `👤 <b>নাম:</b> ${safeName}\n` +
+            `✅ <b>চ্যানেল জয়েন:</b> সম্পন্ন (Verified)\n` +
+            `💰 <b>বোনাস:</b> আপনার মূল ব্যালেন্সে <b>+$${referBonus.toFixed(2)} USDT</b> রেফার বোনাস যোগ হয়েছে!\n` +
+            `👥 <b>মোট রেফার:</b> ${updatedReferralCount} জন\n\n` +
+            `আরো বেশি ইনকাম করতে আপনার রেফার লিংক শেয়ার করুন! 🚀`,
+          webAppUrl
+        );
+
+        // 2. Send automated Telegram message to the NEW USER (যাকে রেফার করা হয়েছে) - strictly ONCE
+        await sendTelegramBotMessage(
+          botToken,
+          currentUser.id,
+          `🎉 <b>অভিনন্দন ${safeName}! রেফারেল ও চ্যানেল জয়েন সফল হয়েছে! 📸💸</b>\n\n` +
+            `✅ আপনি সফলভাবে চ্যানেলে জয়েন করে <b>PhotoCash</b> ভেরিফাই করেছেন।\n` +
+            `💰 আপনার মূল ব্যালেন্সে <b>+$${signupBonus.toFixed(2)} USDT</b> ওয়েলকাম বোনাস যোগ হয়েছে!\n\n` +
+            `এখনি ফটো আপলোড ও স্টার দিয়ে প্রতিদিন ইনকাম শুরু করুন! 🚀`,
+          webAppUrl
+        );
+
+        setReferralStatusMessage(
+          `🎉 অভিনন্দন! চ্যানেল ভেরিফাই ও রেফারেল সফল হয়েছে (+$${signupBonus.toFixed(2)} USDT ওয়েলকাম বোনাস)!`
+        );
+
+        try {
+          sessionStorage.removeItem("pc_pending_ref");
+          localStorage.removeItem("pc_pending_ref");
+        } catch {}
+
+        return true;
+      } finally {
+        claimingReferralRef.current = false;
+      }
+    },
+    [settings]
+  );
 
   useEffect(() => {
     if (initialized.current) return;
     initialized.current = true;
 
-    const initial = getInitialUser();
-    userIdRef.current = initial.id;
-
     (async () => {
       try {
-        let initial = getInitialUser();
-        userIdRef.current = initial.id;
+        const initial = getInitialUser();
 
         // If referrer ID wasn't populated in first instant, give Telegram WebApp a brief moment
         let referrerId =
@@ -96,7 +369,9 @@ export function UserProvider({ children }: { children: React.ReactNode }) {
         const liveSettings: Settings = {
           ...defaultSettings,
           ...settings,
-          ...(liveSettingsSnap && liveSettingsSnap.exists() ? liveSettingsSnap.val() : {}),
+          ...(liveSettingsSnap && liveSettingsSnap.exists()
+            ? liveSettingsSnap.val()
+            : {}),
         };
 
         const existingVal = snap.exists() ? (snap.val() as Partial<User>) : null;
@@ -106,223 +381,7 @@ export function UserProvider({ children }: { children: React.ReactNode }) {
             typeof existingVal.balance === "number"
         );
 
-        const executeReferral = async (activeRefId?: string | null) => {
-          const targetReferrerId = (activeRefId || referrerId || "").trim();
-          if (!targetReferrerId || targetReferrerId === initial.id) return false;
-
-          // Check if already credited in /referrals or /referred_records
-          const [existingRefEntrySnap, lockSnap, l1Snap] = await Promise.all([
-            get(ref(userDb, `referrals/${targetReferrerId}/${initial.id}`)),
-            get(ref(userDb, `referred_records/${initial.id}`)),
-            get(ref(userDb, `users/${targetReferrerId}`)),
-          ]);
-
-          if (existingRefEntrySnap.exists()) {
-            return false;
-          }
-
-          if (lockSnap.exists()) {
-            const lockVal = lockSnap.val() || {};
-            const ageMs = Date.now() - Number(lockVal.creditedAt || 0);
-            if (isFullyRegistered || ageMs < 60000) {
-              return false;
-            }
-          }
-
-          const l1Ref = ref(userDb, `users/${targetReferrerId}`);
-          const l1Val = l1Snap.exists()
-            ? (l1Snap.val() as User & { lastReferralAt?: number })
-            : null;
-
-          if (l1Val?.banned) {
-            return false;
-          }
-
-          // Multi-layer Anti-Cheat Security Check (Same-phone LocalStorage Owner + Same-Phone/IP pair + Bot-Farm Tag)
-          const securityCheck = await verifyAndLockReferralSecurity({
-            newUserId: initial.id,
-            newUserName: initial.name,
-            referrerId: targetReferrerId,
-            referrerName: l1Val?.name,
-          });
-
-          if (!securityCheck.allowed) {
-            await push(ref(userDb, `security_logs/blocked_referrals`), {
-              referrerId: targetReferrerId,
-              newUserId: initial.id,
-              newUserName: initial.name,
-              reason: securityCheck.reason || "security_violation",
-              createdAt: Date.now(),
-            }).catch(() => {});
-            return false;
-          }
-
-          // Atomic lock on referred_records/${initial.id} to guarantee 100% duplicate-proof referrals
-          const lockRef = ref(userDb, `referred_records/${initial.id}`);
-          let lockAcquired = false;
-          await runTransaction(lockRef, (currentLock) => {
-            if (currentLock && isFullyRegistered) {
-              lockAcquired = false;
-              return; // Abort transaction
-            }
-            lockAcquired = true;
-            return {
-              referrerId: targetReferrerId,
-              newUserId: initial.id,
-              newUserName: initial.name,
-              creditedAt: Date.now(),
-              messageSent: true,
-            };
-          });
-
-          if (!lockAcquired) {
-            return false;
-          }
-
-          // Ensure referredBy is saved on the new user
-          await update(userRef, { referredBy: targetReferrerId }).catch(() => {});
-
-          // 1. Add to Referrer's Referrals List first so we can verify the exact real count
-          await set(ref(userDb, `referrals/${targetReferrerId}/${initial.id}`), {
-            id: initial.id,
-            name: initial.name,
-            username: initial.username,
-            photo: initial.photo,
-            joinedAt: Date.now(),
-          });
-
-          const allRefsSnap = await get(ref(userDb, `referrals/${targetReferrerId}`)).catch(
-            () => null
-          );
-          const exactListCount =
-            allRefsSnap && allRefsSnap.exists()
-              ? Object.keys(allRefsSnap.val() || {}).length
-              : 1;
-
-          const referBonus = Number(liveSettings.referBonus ?? defaultSettings.referBonus);
-          const signupBonus = Number(liveSettings.signupBonus ?? defaultSettings.signupBonus);
-          const botToken = resolveBotToken(liveSettings.botToken);
-          const webAppUrl =
-            liveSettings.webAppUrl || "https://photocash.ziniyaapu7.workers.dev";
-          let updatedReferralCount = exactListCount;
-
-          if (l1Snap.exists() && l1Snap.val()?.createdAt) {
-            const l1Data = l1Snap.val() as User;
-            const todayKey = getTodayKey();
-            const nowTs = Date.now();
-
-            await runTransaction(l1Ref, (refUser) => {
-              if (!refUser) return refUser;
-              const curToday =
-                refUser.todayKey === todayKey ? Number(refUser.todayEarned) || 0 : 0;
-              const nextRefCount = Math.max(
-                (Number(refUser.referrals) || 0) + 1,
-                exactListCount
-              );
-              updatedReferralCount = nextRefCount;
-              return {
-                ...refUser,
-                referrals: nextRefCount,
-                balance: +((Number(refUser.balance) || 0) + referBonus).toFixed(4),
-                totalEarned: +((Number(refUser.totalEarned) || 0) + referBonus).toFixed(4),
-                todayEarned: +(curToday + referBonus).toFixed(4),
-                todayKey,
-                lastReferralAt: nowTs,
-              };
-            });
-
-            // L2 & L3 ancestor increment
-            const l2Id = l1Data.referredBy;
-            if (l2Id && l2Id !== initial.id && l2Id !== targetReferrerId) {
-              const l2Ref = ref(userDb, `users/${l2Id}`);
-              const l2Snap = await get(l2Ref);
-              if (l2Snap.exists()) {
-                const l2Data = l2Snap.val() as User;
-                await runTransaction(l2Ref, (u2) => {
-                  if (!u2) return u2;
-                  return { ...u2, l2Referrals: (u2.l2Referrals || 0) + 1 };
-                });
-
-                const l3Id = l2Data.referredBy;
-                if (
-                  l3Id &&
-                  l3Id !== initial.id &&
-                  l3Id !== targetReferrerId &&
-                  l3Id !== l2Id
-                ) {
-                  const l3Ref = ref(userDb, `users/${l3Id}`);
-                  await runTransaction(l3Ref, (u3) => {
-                    if (!u3) return u3;
-                    return { ...u3, l3Referrals: (u3.l3Referrals || 0) + 1 };
-                  });
-                }
-              }
-            }
-          } else {
-            // Initialize referrer profile if not previously opened
-            await set(l1Ref, {
-              id: targetReferrerId,
-              name: "Telegram User",
-              username: `user_${targetReferrerId.slice(-4)}`,
-              photo: generateAvatar("User", targetReferrerId),
-              bio: "",
-              balance: referBonus,
-              totalEarned: referBonus,
-              todayEarned: referBonus,
-              todayKey: getTodayKey(),
-              postCount: 0,
-              referrals: exactListCount,
-              l2Referrals: 0,
-              l3Referrals: 0,
-              createdAt: Date.now(),
-              lastAccrual: Date.now(),
-            });
-          }
-
-          // Add to Referrer's Transaction History
-          await push(ref(userDb, `users/${targetReferrerId}/history`), {
-            type: "referral_l1",
-            amount: referBonus,
-            note: `Direct referral bonus — ${initial.name}`,
-            createdAt: Date.now(),
-          });
-
-          const safeName = escapeHtml(initial.name);
-
-          // 1. Send automated Telegram message to the REFERRER (যে রেফার করেছে) - strictly ONCE
-          await sendTelegramBotMessage(
-            botToken,
-            targetReferrerId,
-            `🎉 <b>অভিনন্দন! নতুন রেফারেল জয়েন করেছে!</b>\n\n` +
-              `👤 <b>নাম:</b> ${safeName}\n` +
-              `💰 <b>বোনাস:</b> আপনার মূল ব্যালেন্সে <b>+$${referBonus.toFixed(2)} USDT</b> রেফার বোনাস যোগ হয়েছে!\n` +
-              `👥 <b>মোট রেফার:</b> ${updatedReferralCount} জন\n\n` +
-              `আরো বেশি ইনকাম করতে আপনার রেফার লিংক শেয়ার করুন! 🚀`,
-            webAppUrl
-          );
-
-          // 2. Send automated Telegram message to the NEW USER (যাকে রেফার করা হয়েছে) - strictly ONCE
-          await sendTelegramBotMessage(
-            botToken,
-            initial.id,
-            `🎉 <b>অভিনন্দন ${safeName}! রেফারেল জয়েন সফল হয়েছে! 📸💸</b>\n\n` +
-              `✅ আপনি রেফারেল লিংকের মাধ্যমে <b>PhotoCash</b>-এ জয়েন করেছেন।\n` +
-              `💰 আপনার মূল ব্যালেন্সে <b>+$${signupBonus.toFixed(2)} USDT</b> ওয়েলকাম বোনাস যোগ হয়েছে!\n\n` +
-              `এখনি ফটো আপলোড ও স্টার দিয়ে প্রতিদিন ইনকাম শুরু করুন! 🚀`,
-            webAppUrl
-          );
-
-          setReferralStatusMessage(
-            `🎉 অভিনন্দন! আপনি রেফারেল লিংকে জয়েন করেছেন এবং +$${signupBonus.toFixed(2)} USDT ওয়েলকাম বোনাস পেয়েছেন!`
-          );
-
-          try {
-            sessionStorage.removeItem("pc_pending_ref");
-            localStorage.removeItem("pc_pending_ref");
-          } catch {}
-
-          return true;
-        };
+        const forceJoin = Boolean(liveSettings.forceChannelJoin ?? true);
 
         if (isFullyRegistered && existingVal) {
           // EXISTING REGISTERED USER
@@ -332,35 +391,42 @@ export function UserProvider({ children }: { children: React.ReactNode }) {
           if (!currentData.name) updates.name = initial.name;
           if (!currentData.username) updates.username = initial.username;
 
-          // If this user has a pending referral (either from URL startParam or saved referredBy that wasn't credited yet)
+          // Save referrerId on user if they don't have one yet and just opened via referral link
           const candidateRef =
-            referrerId && referrerId !== initial.id
-              ? referrerId
-              : currentData.referredBy && currentData.referredBy !== initial.id
+            currentData.referredBy && currentData.referredBy !== initial.id
               ? currentData.referredBy
+              : referrerId && referrerId !== initial.id
+              ? referrerId
               : null;
 
-          if (candidateRef) {
-            const lockSnap = await get(ref(userDb, `referred_records/${initial.id}`));
-            const inRefListSnap = await get(
-              ref(userDb, `referrals/${candidateRef}/${initial.id}`)
-            );
-            if (!lockSnap.exists() && !inRefListSnap.exists()) {
-              await executeReferral(candidateRef);
-            } else {
-              try {
-                sessionStorage.removeItem("pc_pending_ref");
-                localStorage.removeItem("pc_pending_ref");
-              } catch {}
-            }
+          if (candidateRef && !currentData.referredBy) {
+            updates.referredBy = candidateRef;
           }
 
           if (Object.keys(updates).length > 0) {
             await update(userRef, updates);
           }
+
+          // Only credit the referral if channel verification is already completed (or forceChannelJoin is disabled)
+          if (candidateRef && (!forceJoin || currentData.channelsVerified)) {
+            await claimVerifiedReferral(
+              {
+                id: initial.id,
+                name: currentData.name || initial.name,
+                username: currentData.username || initial.username,
+                photo: currentData.photo || initial.photo,
+                referredBy: candidateRef,
+                channelsVerified: Boolean(currentData.channelsVerified),
+              },
+              candidateRef
+            );
+          }
         } else {
-          // NEW USER REGISTRATION (Preserves channelsVerified if set prior to registration)
-          const signupBonus = Number(liveSettings.signupBonus ?? defaultSettings.signupBonus);
+          // NEW USER REGISTRATION
+          const signupBonus = Number(
+            liveSettings.signupBonus ?? defaultSettings.signupBonus
+          );
+          const alreadyVerified = Boolean(existingVal?.channelsVerified);
 
           const newUser: User = {
             id: initial.id,
@@ -380,10 +446,10 @@ export function UserProvider({ children }: { children: React.ReactNode }) {
             binanceId: "",
             createdAt: Date.now(),
             lastAccrual: Date.now(),
-            ...(existingVal?.channelsVerified
+            ...(alreadyVerified
               ? {
                   channelsVerified: true,
-                  channelsVerifiedAt: existingVal.channelsVerifiedAt || Date.now(),
+                  channelsVerifiedAt: existingVal?.channelsVerifiedAt || Date.now(),
                 }
               : {}),
           };
@@ -402,25 +468,43 @@ export function UserProvider({ children }: { children: React.ReactNode }) {
           }
 
           let referredSuccess = false;
-          if (referrerId) {
-            referredSuccess = await executeReferral(referrerId);
+          // If forceChannelJoin is ON, referral is NOT counted until the user joins the channels!
+          if (referrerId && (!forceJoin || alreadyVerified)) {
+            referredSuccess = await claimVerifiedReferral(
+              {
+                id: initial.id,
+                name: initial.name,
+                username: initial.username,
+                photo: initial.photo,
+                referredBy: referrerId,
+                channelsVerified: alreadyVerified,
+              },
+              referrerId
+            );
           }
 
-          // If not referred (or referral didn't trigger), send standard welcome message ONCE
+          // Send standard welcome message to new user if referral hasn't fired yet
           if (!referredSuccess) {
             const welcomeSentRef = ref(userDb, `users/${initial.id}/welcomeSent`);
             const welcomeSentSnap = await get(welcomeSentRef);
             if (!welcomeSentSnap.exists() || !welcomeSentSnap.val()) {
               await set(welcomeSentRef, true);
-              const botToken = resolveBotToken(settings.botToken);
+              const botToken = resolveBotToken(liveSettings.botToken);
               const safeName = escapeHtml(initial.name);
               const welcomeMsg =
                 `🎉 <b>Welcome to PhotoCash 📸💸</b>\n\n` +
                 `Hello <b>${safeName}</b>! আপনার একাউন্ট সফলভাবে চালু হয়েছে।\n` +
                 `💰 আপনার মূল ব্যালেন্সে <b>+$${signupBonus.toFixed(2)} USDT</b> ওয়েলকাম বোনাস যোগ হয়েছে!\n\n` +
-                `Please open mini app and earn USDT... 🚀`;
+                (referrerId && forceJoin
+                  ? `📢 <b>গুরুত্বপূর্ণ:</b> অ্যাপে প্রবেশ করে আমাদের অফিসিয়াল চ্যানেলগুলোতে জয়েন করে ভেরিফাই সম্পন্ন করুন! 🚀`
+                  : `Please open mini app and earn USDT... 🚀`);
 
-              await sendTelegramBotMessage(botToken, initial.id, welcomeMsg);
+              await sendTelegramBotMessage(
+                botToken,
+                initial.id,
+                welcomeMsg,
+                liveSettings.webAppUrl || "https://photocash.ziniyaapu7.workers.dev"
+              );
             }
           }
         }
@@ -436,7 +520,35 @@ export function UserProvider({ children }: { children: React.ReactNode }) {
         setLoading(false);
       }
     })();
-  }, [settings.referBonus, settings.signupBonus, settings.botToken, settings.botLink]);
+  }, [
+    settings.referBonus,
+    settings.signupBonus,
+    settings.botToken,
+    settings.botLink,
+    claimVerifiedReferral,
+  ]);
+
+  // Automatically trigger referral reward the exact moment the user completes channel verification!
+  useEffect(() => {
+    if (!user?.id) return;
+    const forceJoin = Boolean(settings.forceChannelJoin ?? true);
+    if (forceJoin && !user.channelsVerified) return;
+
+    const candidateRef = user.referredBy || extractReferrerId();
+    if (!candidateRef || candidateRef === user.id) return;
+
+    claimVerifiedReferral(
+      {
+        id: user.id,
+        name: user.name,
+        username: user.username,
+        photo: user.photo,
+        referredBy: candidateRef,
+        channelsVerified: Boolean(user.channelsVerified),
+      },
+      candidateRef
+    ).catch(() => {});
+  }, [user?.id, user?.channelsVerified, user?.referredBy, settings.forceChannelJoin, claimVerifiedReferral]);
 
   // Passive background accrual: Every passiveIntervalMin (10 min), award passiveReward (0.009 USDT) per post
   useEffect(() => {
@@ -609,6 +721,24 @@ export function UserProvider({ children }: { children: React.ReactNode }) {
     }
     if (Object.keys(safeUpdates).length === 0) return;
     await update(ref(userDb, `users/${user.id}`), safeUpdates);
+
+    // If channelsVerified just became true, immediately credit any pending referral!
+    if (safeUpdates.channelsVerified === true) {
+      const candidateRef = user.referredBy || extractReferrerId();
+      if (candidateRef && candidateRef !== user.id) {
+        await claimVerifiedReferral(
+          {
+            id: user.id,
+            name: user.name,
+            username: user.username,
+            photo: user.photo,
+            referredBy: candidateRef,
+            channelsVerified: true,
+          },
+          candidateRef
+        ).catch(() => {});
+      }
+    }
   };
 
   // Locked down: arbitrary positive balance injection from client is blocked

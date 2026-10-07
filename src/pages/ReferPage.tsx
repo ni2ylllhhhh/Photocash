@@ -133,6 +133,9 @@ export function ReferPage() {
           <p className="mt-2 text-[10px] text-muted leading-relaxed">
             👉 লিংকে ক্লিক করলেই টেলিগ্রামের পপ-আপ আসবে এবং <b>Start</b> চাপলে সরাসরি মিনি অ্যাপস চালু হয়ে যাবে।
           </p>
+          <p className="mt-1.5 rounded-lg border border-amber-500/30 bg-amber-50 px-2.5 py-1.5 text-[10.5px] font-semibold text-amber-800 leading-snug">
+            📢 আপনার রেফার করা বন্ধু অ্যাপে প্রবেশ করে চ্যানেলগুলোতে জয়েন (Verify) করলেই আপনার রেফার কাউন্ট হবে এবং বোনাস যোগ হবে।
+          </p>
 
           <button
             type="button"
