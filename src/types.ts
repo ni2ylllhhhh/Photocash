@@ -143,6 +143,8 @@ export interface User {
   joined_at?: number;
   last_active?: number;
   is_blocked?: boolean;
+  allows_write_to_pm?: boolean;
+  bot_chat_inactive?: boolean;
 }
 
 export type BroadcastMessageType = "text" | "photo" | "video" | "document";
@@ -175,6 +177,7 @@ export interface BroadcastJob {
   totalUsers: number;
   sent: number;
   failed: number;
+  skippedCount?: number;
   blockedCount?: number;
   lastProcessedIndex: number;
   targetUserIds: string[];

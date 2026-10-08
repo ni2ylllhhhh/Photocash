@@ -9,7 +9,7 @@ import {
   Settings,
   User,
 } from "../types";
-import { resolveBotToken } from "../utils/tokenVault";
+import { resolveBotToken, encryptBotToken } from "../utils/tokenVault";
 import { uploadImageToImgbb } from "../utils";
 import {
   Megaphone,
@@ -22,16 +22,17 @@ import {
   Video,
   FileText,
   Type,
-  Users,
   CheckCircle2,
-  AlertTriangle,
   Clock,
   RefreshCw,
   Copy,
   Upload,
   LayoutGrid,
   Rows,
+  Layers,
 } from "lucide-react";
+
+const BATCH_SIZE = 25; // গ্রুপ ভিত্তিক ২৫ জন করে ১টি ব্যাচ
 
 interface AdminBroadcastTabProps {
   settings: Settings;
@@ -89,8 +90,12 @@ function buildReplyMarkup(
 }
 
 /**
- * Sends a single broadcast message (Text / Photo / Video / Document) to a single user
- * with automatic 429 Flood-Wait retry & 403 Bot-Blocked detection.
+ * 3-Layer Telegram Delivery Engine (POST -> Plain Text Fallback -> Server Proxy Fallback)
+ * Strictly follows Telegram Bot API Rules with 429 Flood-Wait Retry & Smart Status Detection:
+ * - status: "sent" -> Message delivered to user
+ * - status: "not_started" -> User opened Mini App link without starting bot chat (`chat not found`)
+ * - status: "blocked" -> User blocked the bot or deactivated Telegram account
+ * - status: "failed" -> Other error
  */
 async function sendSingleBroadcastItem(params: {
   botToken: string;
@@ -99,16 +104,19 @@ async function sendSingleBroadcastItem(params: {
   text: string;
   mediaUrl?: string;
   replyMarkup?: { inline_keyboard: any[][] };
-}): Promise<{ ok: boolean; blocked?: boolean; error?: string }> {
+}): Promise<{
+  status: "sent" | "not_started" | "blocked" | "failed";
+  error?: string;
+}> {
   const { botToken, chatId, messageType, text, mediaUrl, replyMarkup } = params;
-  if (!botToken || !chatId) return { ok: false, error: "missing_token_or_chat_id" };
+  if (!botToken || !chatId) return { status: "failed", error: "missing_token_or_chat_id" };
 
   let endpoint = "sendMessage";
   if (messageType === "photo" && mediaUrl?.trim()) endpoint = "sendPhoto";
   else if (messageType === "video" && mediaUrl?.trim()) endpoint = "sendVideo";
   else if (messageType === "document" && mediaUrl?.trim()) endpoint = "sendDocument";
 
-  const attemptRequest = async (useHtml: boolean): Promise<any> => {
+  const attemptDirectPost = async (useHtml: boolean): Promise<{ httpStatus: number; data: any }> => {
     const form = new URLSearchParams();
     form.set("chat_id", String(chatId));
 
@@ -145,9 +153,9 @@ async function sendSingleBroadcastItem(params: {
 
   for (let retry = 0; retry < 3; retry++) {
     try {
-      let result = await attemptRequest(true);
+      let result = await attemptDirectPost(true);
 
-      // If HTML parse failed (400 Bad Request: can't parse entities), retry once as plain text
+      // Layer 2: If HTML tag parsing failed, retry immediately as plain text
       if (
         !result.data?.ok &&
         result.httpStatus === 400 &&
@@ -155,43 +163,71 @@ async function sendSingleBroadcastItem(params: {
           .toLowerCase()
           .includes("parse")
       ) {
-        result = await attemptRequest(false);
+        result = await attemptDirectPost(false);
       }
 
       if (result.data?.ok) {
-        return { ok: true };
+        return { status: "sent" };
       }
 
-      // Check Telegram Flood Limit (429 Too Many Requests)
+      // Handle Telegram Flood Limit (429 Too Many Requests)
       if (result.httpStatus === 429 || result.data?.error_code === 429) {
         const retryAfterSec = Number(result.data?.parameters?.retry_after) || 3;
         await new Promise((r) => setTimeout(r, (retryAfterSec + 1) * 1000));
         continue;
       }
 
-      // Check if user blocked the bot or deactivated account (403 Forbidden)
       const desc = String(result.data?.description || "").toLowerCase();
+
+      // User hasn't pressed /start in bot chat yet (opened direct link only)
+      if (desc.includes("chat not found") || desc.includes("peer_id_invalid")) {
+        return { status: "not_started", error: result.data?.description };
+      }
+
+      // User blocked the bot or deactivated account (403 Forbidden)
       if (
         result.httpStatus === 403 ||
         result.data?.error_code === 403 ||
         desc.includes("blocked") ||
         desc.includes("deactivated") ||
-        desc.includes("chat not found")
+        desc.includes("user is deactivated") ||
+        desc.includes("bot can't initiate conversation")
       ) {
-        return { ok: false, blocked: true, error: result.data?.description || "blocked" };
+        return { status: "blocked", error: result.data?.description };
       }
 
-      return { ok: false, error: result.data?.description || "send_failed" };
+      return { status: "failed", error: result.data?.description || "send_failed" };
     } catch (err: any) {
+      // Layer 3: Browser network hiccup fallback -> try Server Proxy (/api/send-message) for text messages
+      if (endpoint === "sendMessage") {
+        try {
+          const proxyRes = await fetch("/api/send-message", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              bot_token: encryptBotToken(botToken),
+              chat_id: chatId,
+              text,
+              parse_mode: "HTML",
+              reply_markup: replyMarkup,
+            }),
+          });
+          if (proxyRes.ok) {
+            const pData = await proxyRes.json().catch(() => null);
+            if (pData?.ok) return { status: "sent" };
+          }
+        } catch {}
+      }
+
       if (retry < 2) {
-        await new Promise((r) => setTimeout(r, 800));
+        await new Promise((r) => setTimeout(r, 700));
         continue;
       }
-      return { ok: false, error: err?.message || "network_error" };
+      return { status: "failed", error: err?.message || "network_error" };
     }
   }
 
-  return { ok: false, error: "max_retries_exceeded" };
+  return { status: "failed", error: "max_retries_exceeded" };
 }
 
 export function AdminBroadcastTab({ settings }: AdminBroadcastTabProps) {
@@ -204,12 +240,12 @@ export function AdminBroadcastTab({ settings }: AdminBroadcastTabProps) {
   const [mediaUrl, setMediaUrl] = useState("");
   const [uploadingMedia, setUploadingMedia] = useState(false);
 
-  // Target Filter State
+  // Target Filter State (Default to "active" / verified & reachable users so failure rate is minimal!)
   const [targetType, setTargetType] = useState<BroadcastTargetType>("all");
   const [joinedAfterDate, setJoinedAfterDate] = useState("");
   const [specificIdsInput, setSpecificIdsInput] = useState("");
-  const [languageOrGroup, setLanguageOrGroup] = useState("all");
-  const [skipBlockedUsers, setSkipBlockedUsers] = useState(true);
+  const [languageOrGroup, setLanguageOrGroup] = useState("verified");
+  const [skipBlockedAndInactive, setSkipBlockedAndInactive] = useState(true);
 
   // Inline Buttons State
   const [enableButtons, setEnableButtons] = useState(true);
@@ -222,23 +258,46 @@ export function AdminBroadcastTab({ settings }: AdminBroadcastTabProps) {
     },
   ]);
 
-  // Active Broadcast Execution State
+  // Active Broadcast & 25-User Batch Execution State
   const [activeJob, setActiveJob] = useState<BroadcastJob | null>(null);
   const [isSending, setIsSending] = useState(false);
+  const [batchCooldownActive, setBatchCooldownActive] = useState(false);
   const [statusBanner, setStatusBanner] = useState<string | null>(null);
   const stopRequestedRef = useRef(false);
 
-  // Load all users from userDb
+  // Load all real users from userDb (excluding fake Guest/SEED/🪱 entries)
   useEffect(() => {
     const uRef = ref(userDb, "users");
     const unsubscribe = onValue(uRef, (snap) => {
       const data = snap.val() || {};
       const list: User[] = Object.entries(data)
-        .filter(([, val]: [string, any]) => val && (val.id || val.name))
+        .filter(([, val]: [string, any]) => {
+          if (!val || (!val.id && !val.name)) return false;
+          const uName = String(val.name || "");
+          if (/^Guest \d+$/i.test(uName) || /SEED/i.test(uName) || uName.includes("🪱")) {
+            return false;
+          }
+          return true;
+        })
         .map(([key, val]: [string, any]) => ({
           ...val,
           id: String(val.id || key),
         }));
+
+      // Sort so Bot-Reachable, Channel-Verified, and Most Recently Active users come FIRST!
+      list.sort((a, b) => {
+        const scoreA =
+          (a.allows_write_to_pm ? 100 : 0) +
+          (a.channelsVerified ? 50 : 0) +
+          ((a.referrals || 0) > 0 ? 25 : 0);
+        const scoreB =
+          (b.allows_write_to_pm ? 100 : 0) +
+          (b.channelsVerified ? 50 : 0) +
+          ((b.referrals || 0) > 0 ? 25 : 0);
+        if (scoreB !== scoreA) return scoreB - scoreA;
+        return (b.last_active || b.createdAt || 0) - (a.last_active || a.createdAt || 0);
+      });
+
       setUsers(list);
     });
     return () => unsubscribe();
@@ -253,17 +312,14 @@ export function AdminBroadcastTab({ settings }: AdminBroadcastTabProps) {
         ...val,
         id: val.id || key,
       }));
-      // Sort ascending to assign serial numbers (#1, #2, ...)
       all.sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
       const numbered = all.map((item, idx) => ({
         ...item,
         serialNumber: item.serialNumber || idx + 1,
       }));
-      // Sort descending for history display
       numbered.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
       setBroadcasts(numbered);
 
-      // Keep activeJob synced if one is selected/running
       setActiveJob((prev) => {
         if (!prev) {
           const resumable = numbered.find(
@@ -278,35 +334,34 @@ export function AdminBroadcastTab({ settings }: AdminBroadcastTabProps) {
     return () => unsubscribe();
   }, []);
 
-  // Compute user database statistics (Active / Inactive / Blocked / Languages)
+  // Compute user database statistics
   const userStats = useMemo(() => {
     const now = Date.now();
     const sevenDaysMs = 7 * 24 * 60 * 60 * 1000;
     let activeCount = 0;
     let blockedCount = 0;
     let verifiedCount = 0;
-    const languages: Record<string, number> = {};
+    let reachableCount = 0;
 
     for (const u of users) {
       if (u.is_blocked || u.banned) {
         blockedCount++;
-      } else {
+      } else if (!u.bot_chat_inactive) {
+        reachableCount++;
         const lastAct = u.last_active || u.lastAccrual || u.createdAt || 0;
         if (now - lastAct <= sevenDaysMs || u.channelsVerified) {
           activeCount++;
         }
       }
       if (u.channelsVerified) verifiedCount++;
-      const lang = (u.language || "en").toLowerCase();
-      languages[lang] = (languages[lang] || 0) + 1;
     }
 
     return {
       total: users.length,
+      reachableCount,
       activeCount,
       blockedCount,
       verifiedCount,
-      languages,
     };
   }, [users]);
 
@@ -319,22 +374,21 @@ export function AdminBroadcastTab({ settings }: AdminBroadcastTabProps) {
       const rawIds = specificIdsInput
         .split(/[\s,;]+/)
         .map((s) => s.trim())
-        .filter((s) => /^\d{5,}$/.test(s));
-      const uniqueIds = Array.from(new Set(rawIds));
-      return uniqueIds;
+        .filter((s) => /^\d{6,}$/.test(s));
+      return Array.from(new Set(rawIds));
     }
 
     let filtered = users.filter((u) => {
-      if (!u.id || !/^\d{5,}$/.test(String(u.id))) return false;
-      if (skipBlockedUsers && u.is_blocked) return false;
+      if (!u.id || !/^\d{6,}$/.test(String(u.id))) return false;
+      if (u.banned) return false;
+      if (skipBlockedAndInactive && (u.is_blocked || u.bot_chat_inactive)) return false;
       return true;
     });
 
     if (targetType === "active") {
       filtered = filtered.filter((u) => {
-        if (u.banned || u.is_blocked) return false;
         const lastAct = u.last_active || u.lastAccrual || u.createdAt || 0;
-        return now - lastAct <= sevenDaysMs || Boolean(u.channelsVerified);
+        return Boolean(u.channelsVerified) || now - lastAct <= sevenDaysMs;
       });
     } else if (targetType === "joined_after" && joinedAfterDate) {
       const minTs = new Date(joinedAfterDate).getTime();
@@ -365,8 +419,10 @@ export function AdminBroadcastTab({ settings }: AdminBroadcastTabProps) {
     joinedAfterDate,
     specificIdsInput,
     languageOrGroup,
-    skipBlockedUsers,
+    skipBlockedAndInactive,
   ]);
+
+  const totalBatchesCount = Math.max(1, Math.ceil(targetUsersList.length / BATCH_SIZE));
 
   const handlePhotoUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -405,9 +461,12 @@ export function AdminBroadcastTab({ settings }: AdminBroadcastTabProps) {
   };
 
   /**
-   * Core Rate-Limited Broadcast Runner (supports both new broadcasts & resuming paused broadcasts)
+   * Group-Based 25-User Batch Broadcast Engine (`গ্রুপ ভিত্তিক ২৫ জন করে ব্যাচ`)
+   * - Splits target users into batches of 25 users (`BATCH_SIZE = 25`)
+   * - Follows Telegram's official Bot API rate rules (~85ms between users inside a batch, 1.5s pause between batches of 25)
+   * - If `singleBatchOnly === true`, sends exactly 1 batch of 25 users and pauses cleanly!
    */
-  const runBroadcastLoop = async (job: BroadcastJob) => {
+  const runBroadcastLoop = async (job: BroadcastJob, singleBatchOnly = false) => {
     if (isSending) return;
     setIsSending(true);
     stopRequestedRef.current = false;
@@ -421,29 +480,39 @@ export function AdminBroadcastTab({ settings }: AdminBroadcastTabProps) {
 
     let sent = Number(job.sent) || 0;
     let failed = Number(job.failed) || 0;
+    let skippedCount = Number(job.skippedCount) || 0;
     let blockedCount = Number(job.blockedCount) || 0;
     const targetIds = job.targetUserIds || [];
     const totalUsers = targetIds.length;
     let currentIndex = Number(job.lastProcessedIndex) || 0;
+
+    // Calculate batch boundaries (25 users per batch)
+    const startBatchEnd = Math.min(
+      totalUsers,
+      (Math.floor(currentIndex / BATCH_SIZE) + 1) * BATCH_SIZE
+    );
+    const stopAtIndex = singleBatchOnly ? startBatchEnd : totalUsers;
 
     await update(ref(userDb, `broadcasts/${job.id}`), {
       status: "running",
       updatedAt: Date.now(),
     });
 
-    for (let i = currentIndex; i < totalUsers; i++) {
+    for (let i = currentIndex; i < stopAtIndex; i++) {
       if (stopRequestedRef.current) {
         await update(ref(userDb, `broadcasts/${job.id}`), {
           status: "paused",
           sent,
           failed,
+          skippedCount,
           blockedCount,
           lastProcessedIndex: i,
           updatedAt: Date.now(),
         });
         setIsSending(false);
+        setBatchCooldownActive(false);
         setStatusBanner(
-          `⏸️ ব্রডকাস্ট পজ (Pause) করা হয়েছে (${sent}/${totalUsers} পাঠানো হয়েছে)। যেকোনো সময় Resume করতে পারবেন।`
+          `⏸️ ব্রডকাস্ট পজ করা হয়েছে (সফল: ${sent}, স্কিপড: ${skippedCount})। যেকোনো সময় পরের ২৫ জনের ব্যাচ চালু করতে পারবেন।`
         );
         return;
       }
@@ -458,65 +527,94 @@ export function AdminBroadcastTab({ settings }: AdminBroadcastTabProps) {
         replyMarkup,
       });
 
-      if (result.ok) {
+      if (result.status === "sent") {
         sent++;
-        // Clear is_blocked if user received message
         update(ref(userDb, `users/${uid}`), {
           user_id: uid,
+          allows_write_to_pm: true,
+          bot_chat_inactive: false,
           is_blocked: false,
+        }).catch(() => {});
+      } else if (result.status === "not_started") {
+        // User opened Mini App via direct link without starting bot chat yet -> mark bot_chat_inactive & count as Skipped (NOT Failed!)
+        skippedCount++;
+        update(ref(userDb, `users/${uid}`), {
+          user_id: uid,
+          bot_chat_inactive: true,
+        }).catch(() => {});
+      } else if (result.status === "blocked") {
+        blockedCount++;
+        failed++;
+        update(ref(userDb, `users/${uid}`), {
+          user_id: uid,
+          is_blocked: true,
         }).catch(() => {});
       } else {
         failed++;
-        if (result.blocked) {
-          blockedCount++;
-          update(ref(userDb, `users/${uid}`), {
-            user_id: uid,
-            is_blocked: true,
-          }).catch(() => {});
-        }
       }
 
       currentIndex = i + 1;
+      const isComplete = currentIndex >= totalUsers;
+      const isBatchBoundary = currentIndex % BATCH_SIZE === 0;
 
-      // Update live progress in local state every message, and persist to Firebase every 5 messages (or on last item)
       const updatedJobState: BroadcastJob = {
         ...job,
-        status: currentIndex >= totalUsers ? "completed" : "running",
+        status: isComplete
+          ? "completed"
+          : singleBatchOnly && currentIndex >= stopAtIndex
+          ? "paused"
+          : "running",
         sent,
         failed,
+        skippedCount,
         blockedCount,
         lastProcessedIndex: currentIndex,
         updatedAt: Date.now(),
       };
       setActiveJob(updatedJobState);
 
-      if (currentIndex % 5 === 0 || currentIndex === totalUsers) {
+      if (currentIndex % 5 === 0 || isBatchBoundary || isComplete || currentIndex === stopAtIndex) {
         await update(ref(userDb, `broadcasts/${job.id}`), {
           sent,
           failed,
+          skippedCount,
           blockedCount,
           lastProcessedIndex: currentIndex,
-          status: currentIndex >= totalUsers ? "completed" : "running",
+          status: updatedJobState.status,
           updatedAt: Date.now(),
         }).catch(() => {});
       }
 
-      // Safe Telegram Rate Limiting:
-      // ~55ms between messages (~18 msg/sec, well below Telegram's 30 msg/sec flood limit)
-      // + 600ms breather every 25 messages
-      if (currentIndex < totalUsers && !stopRequestedRef.current) {
-        const delayMs = currentIndex % 25 === 0 ? 600 : 55;
-        await new Promise((r) => setTimeout(r, delayMs));
+      // Telegram Rules Rate Limiting:
+      // 1) After every 25-user batch: 1500ms safe batch cooldown
+      // 2) Inside a 25-user batch: 85ms safe delay between messages (~12 msg/sec)
+      if (currentIndex < stopAtIndex && !stopRequestedRef.current) {
+        if (isBatchBoundary) {
+          setBatchCooldownActive(true);
+          await new Promise((r) => setTimeout(r, 1500));
+          setBatchCooldownActive(false);
+        } else {
+          await new Promise((r) => setTimeout(r, 85));
+        }
       }
     }
 
     setIsSending(false);
-    setStatusBanner(
-      `✅ ব্রডকাস্ট সফলভাবে সম্পন্ন হয়েছে! মোট পাঠানো হয়েছে: ${sent} জন, ব্যর্থ: ${failed} জন।`
-    );
+    setBatchCooldownActive(false);
+
+    if (currentIndex >= totalUsers) {
+      setStatusBanner(
+        `✅ সব ব্যাচের ব্রডকাস্ট সম্পন্ন হয়েছে! সফল (Sent): ${sent} জন, বট স্টার্ট করেনি (Skipped): ${skippedCount} জন, ব্যর্থ (Failed): ${failed} জন।`
+      );
+    } else {
+      const completedBatchNum = Math.ceil(currentIndex / BATCH_SIZE);
+      setStatusBanner(
+        `📦 ব্যাচ #${completedBatchNum} (২৫ জন) সম্পন্ন হয়েছে! সফল (Sent): ${sent} জন। পরের ২৫ জনের ব্যাচ পাঠাতে 'Send Next 25-User Batch' বাটনে ক্লিক করুন।`
+      );
+    }
   };
 
-  const handleStartNewBroadcast = async () => {
+  const handleStartNewBroadcast = async (singleBatchOnly = false) => {
     if (isSending) return;
     if (!text.trim() && messageType === "text") {
       setStatusBanner("❌ দয়া করে ব্রডকাস্ট মেসেজ লিখুন!");
@@ -552,6 +650,7 @@ export function AdminBroadcastTab({ settings }: AdminBroadcastTabProps) {
       totalUsers: targetUsersList.length,
       sent: 0,
       failed: 0,
+      skippedCount: 0,
       blockedCount: 0,
       lastProcessedIndex: 0,
       targetUserIds: targetUsersList,
@@ -561,23 +660,22 @@ export function AdminBroadcastTab({ settings }: AdminBroadcastTabProps) {
     };
 
     await set(newBroadcastRef, newJob);
-    await runBroadcastLoop(newJob);
+    await runBroadcastLoop(newJob, singleBatchOnly);
   };
 
   const handleStopBroadcast = () => {
     stopRequestedRef.current = true;
   };
 
-  const handleResumeBroadcast = async (job: BroadcastJob) => {
+  const handleResumeBroadcast = async (job: BroadcastJob, singleBatchOnly = false) => {
     if (isSending) return;
-    // Fetch fresh job snapshot from Firebase before resuming
     const snap = await get(ref(userDb, `broadcasts/${job.id}`));
     const freshJob: BroadcastJob = snap.exists() ? snap.val() : job;
     if (freshJob.lastProcessedIndex >= freshJob.totalUsers) {
       await update(ref(userDb, `broadcasts/${job.id}`), { status: "completed" });
       return;
     }
-    await runBroadcastLoop(freshJob);
+    await runBroadcastLoop(freshJob, singleBatchOnly);
   };
 
   const handleCloneBroadcast = (job: BroadcastJob) => {
@@ -602,57 +700,92 @@ export function AdminBroadcastTab({ settings }: AdminBroadcastTabProps) {
     }
   };
 
-  // Progress calculation for Active Job
+  // Progress & 25-User Batch calculation for Active Job
   const progressStats = useMemo(() => {
     if (!activeJob) return null;
     const total = Math.max(1, Number(activeJob.totalUsers) || 0);
     const processed = Math.min(
       total,
       Number(activeJob.lastProcessedIndex) ||
-        (Number(activeJob.sent) || 0) + (Number(activeJob.failed) || 0)
+        (Number(activeJob.sent) || 0) +
+          (Number(activeJob.failed) || 0) +
+          (Number(activeJob.skippedCount) || 0)
     );
     const sent = Number(activeJob.sent) || 0;
     const failed = Number(activeJob.failed) || 0;
+    const skipped = Number(activeJob.skippedCount) || 0;
     const remaining = Math.max(0, total - processed);
     const percent = Math.min(100, Math.round((processed / total) * 100));
-    return { total, processed, sent, failed, remaining, percent };
+
+    const totalBatches = Math.max(1, Math.ceil(total / BATCH_SIZE));
+    const currentBatchNumber = Math.min(
+      totalBatches,
+      Math.floor(Math.max(0, processed - (processed === total ? 1 : 0)) / BATCH_SIZE) + 1
+    );
+    const currentBatchCount =
+      processed === total
+        ? total % BATCH_SIZE || BATCH_SIZE
+        : processed % BATCH_SIZE;
+    const currentBatchTarget = Math.min(
+      BATCH_SIZE,
+      total - (currentBatchNumber - 1) * BATCH_SIZE
+    );
+    const batchPercent = Math.min(
+      100,
+      Math.round((currentBatchCount / Math.max(1, currentBatchTarget)) * 100)
+    );
+
+    return {
+      total,
+      processed,
+      sent,
+      failed,
+      skipped,
+      remaining,
+      percent,
+      totalBatches,
+      currentBatchNumber,
+      currentBatchCount,
+      currentBatchTarget,
+      batchPercent,
+    };
   }, [activeJob]);
 
   return (
     <div className="space-y-4 pb-10">
       {/* Top Header Banner */}
       <div className="rounded-2xl border border-emerald-500/30 bg-gradient-to-r from-emerald-500/15 via-teal-500/10 to-sky-500/15 p-4">
-        <div className="flex items-center justify-between">
+        <div className="flex flex-wrap items-center justify-between gap-2">
           <div className="flex items-center gap-2.5">
             <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-emerald-500/20 text-emerald-400">
               <Megaphone size={20} />
             </div>
             <div>
               <h2 className="text-[15px] font-extrabold text-white">
-                📢 Admin Broadcast System
+                📢 Admin Broadcast System (25-User Batch Engine)
               </h2>
               <p className="text-[11px] text-white/60">
-                Smart Rate-Limited Telegram Bot Broadcaster (Flood-Safe + Auto Retry)
+                গ্রুপ ভিত্তিক ২৫ জন করে ব্যাচ • ১০০% টেলিগ্রাম রুলস ও ফ্লাড-সেফ ডেলিভারি
               </p>
             </div>
           </div>
           <span className="rounded-full border border-emerald-500/40 bg-emerald-500/20 px-2.5 py-1 text-[10px] font-bold text-emerald-300">
-            ⚡ ~18 msg/sec Safe Mode
+            📦 প্রতি ব্যাচে ২৫ জন ইউজার
           </span>
         </div>
 
         {/* User Database Tracking Summary */}
         <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4">
           <div className="rounded-xl bg-black/30 p-2.5 text-center">
-            <p className="text-[10px] text-white/50">Total Users</p>
+            <p className="text-[10px] text-white/50">Total Real Users</p>
             <p className="text-[16px] font-extrabold text-white">
               {userStats.total.toLocaleString()}
             </p>
           </div>
           <div className="rounded-xl bg-black/30 p-2.5 text-center">
-            <p className="text-[10px] text-emerald-300/70">Active Users</p>
+            <p className="text-[10px] text-emerald-300/70">Active / Reachable</p>
             <p className="text-[16px] font-extrabold text-emerald-400">
-              {userStats.activeCount.toLocaleString()}
+              {userStats.reachableCount.toLocaleString()}
             </p>
           </div>
           <div className="rounded-xl bg-black/30 p-2.5 text-center">
@@ -662,7 +795,7 @@ export function AdminBroadcastTab({ settings }: AdminBroadcastTabProps) {
             </p>
           </div>
           <div className="rounded-xl bg-black/30 p-2.5 text-center">
-            <p className="text-[10px] text-red-300/70">Bot Blocked (is_blocked)</p>
+            <p className="text-[10px] text-red-300/70">Blocked (is_blocked)</p>
             <p className="text-[16px] font-extrabold text-red-400">
               {userStats.blockedCount.toLocaleString()}
             </p>
@@ -676,10 +809,10 @@ export function AdminBroadcastTab({ settings }: AdminBroadcastTabProps) {
         </div>
       )}
 
-      {/* 📊 LIVE PROGRESS & STOP / RESUME PANEL */}
+      {/* 📊 LIVE PROGRESS & 25-USER BATCH PANEL */}
       {activeJob && progressStats && (
         <section className="rounded-2xl border-2 border-amber-500/40 bg-[#171a21] p-4 shadow-lg">
-          <div className="flex items-center justify-between">
+          <div className="flex flex-wrap items-center justify-between gap-2">
             <div className="flex items-center gap-2">
               {isSending ? (
                 <RefreshCw size={16} className="animate-spin text-emerald-400" />
@@ -689,22 +822,42 @@ export function AdminBroadcastTab({ settings }: AdminBroadcastTabProps) {
                 <CheckCircle2 size={16} className="text-emerald-400" />
               )}
               <h3 className="text-[14px] font-extrabold text-white">
-                📊 Live Progress — Broadcast #{activeJob.serialNumber} (
+                📊 Broadcast #{activeJob.serialNumber} —{" "}
                 {isSending
-                  ? "Broadcast চলছে..."
+                  ? batchCooldownActive
+                    ? `⏳ ২৫ জনের ব্যাচ সম্পন্ন! পরের ব্যাচ প্রস্তুত হচ্ছে...`
+                    : `চলছে: ব্যাচ #${progressStats.currentBatchNumber} / ${progressStats.totalBatches} (২৫ জনের গ্রুপ)`
                   : activeJob.status === "paused"
                   ? "মাঝপথে থামানো আছে (Paused)"
                   : "Completed ✅"}
-                )
               </h3>
             </div>
             <span className="rounded-full bg-white/10 px-2.5 py-0.5 text-[11px] font-bold text-amber-300">
-              Progress: {progressStats.percent}%
+              মোট প্রগ্রেস: {progressStats.percent}%
             </span>
           </div>
 
-          {/* Progress Bar */}
-          <div className="mt-3 h-3 w-full overflow-hidden rounded-full bg-black/50 p-0.5">
+          {/* Current 25-User Batch Progress Bar */}
+          <div className="mt-3 rounded-xl border border-white/10 bg-black/30 p-2.5">
+            <div className="mb-1 flex items-center justify-between text-[11px] font-bold">
+              <span className="flex items-center gap-1.5 text-sky-300">
+                <Layers size={13} /> বর্তমান ২৫ জনের ব্যাচ (Batch #{progressStats.currentBatchNumber} /{" "}
+                {progressStats.totalBatches})
+              </span>
+              <span className="text-white">
+                {progressStats.currentBatchCount} / {progressStats.currentBatchTarget} জন
+              </span>
+            </div>
+            <div className="h-2 w-full overflow-hidden rounded-full bg-black/60">
+              <div
+                className="h-full rounded-full bg-gradient-to-r from-sky-400 to-emerald-400 transition-all duration-200"
+                style={{ width: `${progressStats.batchPercent}%` }}
+              />
+            </div>
+          </div>
+
+          {/* Overall Progress Bar */}
+          <div className="mt-2.5 h-3 w-full overflow-hidden rounded-full bg-black/50 p-0.5">
             <div
               className="h-full rounded-full bg-gradient-to-r from-emerald-500 via-teal-400 to-sky-400 transition-all duration-300"
               style={{ width: `${progressStats.percent}%` }}
@@ -712,27 +865,33 @@ export function AdminBroadcastTab({ settings }: AdminBroadcastTabProps) {
           </div>
 
           {/* Stats Grid */}
-          <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4">
-            <div className="rounded-xl bg-black/40 p-2.5">
+          <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-5">
+            <div className="rounded-xl bg-black/40 p-2.5 text-center">
               <p className="text-[10px] text-white/50">Total Users</p>
               <p className="text-[15px] font-extrabold text-white">
                 {progressStats.total.toLocaleString()}
               </p>
             </div>
-            <div className="rounded-xl bg-emerald-500/10 p-2.5">
-              <p className="text-[10px] text-emerald-300/70">Sent (সফল)</p>
+            <div className="rounded-xl bg-emerald-500/10 p-2.5 text-center">
+              <p className="text-[10px] text-emerald-300/80">Sent (সফল ✅)</p>
               <p className="text-[15px] font-extrabold text-emerald-400">
                 {progressStats.sent.toLocaleString()}
               </p>
             </div>
-            <div className="rounded-xl bg-red-500/10 p-2.5">
-              <p className="text-[10px] text-red-300/70">Failed / Blocked</p>
+            <div className="rounded-xl bg-sky-500/10 p-2.5 text-center">
+              <p className="text-[10px] text-sky-300/80">Skipped (No /start)</p>
+              <p className="text-[15px] font-extrabold text-sky-300">
+                {progressStats.skipped.toLocaleString()}
+              </p>
+            </div>
+            <div className="rounded-xl bg-red-500/10 p-2.5 text-center">
+              <p className="text-[10px] text-red-300/80">Failed / Blocked</p>
               <p className="text-[15px] font-extrabold text-red-400">
                 {progressStats.failed.toLocaleString()}
               </p>
             </div>
-            <div className="rounded-xl bg-amber-500/10 p-2.5">
-              <p className="text-[10px] text-amber-300/70">Remaining (বাকি)</p>
+            <div className="rounded-xl bg-amber-500/10 p-2.5 text-center">
+              <p className="text-[10px] text-amber-300/80">Remaining (বাকি)</p>
               <p className="text-[15px] font-extrabold text-amber-400">
                 {progressStats.remaining.toLocaleString()}
               </p>
@@ -751,14 +910,24 @@ export function AdminBroadcastTab({ settings }: AdminBroadcastTabProps) {
               </button>
             ) : (
               progressStats.remaining > 0 && (
-                <button
-                  type="button"
-                  onClick={() => handleResumeBroadcast(activeJob)}
-                  className="flex flex-1 items-center justify-center gap-2 rounded-xl bg-emerald-500 py-2.5 text-[13px] font-extrabold text-black shadow hover:bg-emerald-400 active:scale-[0.99]"
-                >
-                  <Play size={15} fill="currentColor" /> ▶️ Resume Broadcast (বাকি{" "}
-                  {progressStats.remaining.toLocaleString()} জনকে পাঠান)
-                </button>
+                <>
+                  <button
+                    type="button"
+                    onClick={() => handleResumeBroadcast(activeJob, true)}
+                    className="flex flex-1 items-center justify-center gap-2 rounded-xl bg-sky-500 py-2.5 text-[12px] font-extrabold text-black shadow hover:bg-sky-400 active:scale-[0.99]"
+                  >
+                    <Layers size={15} /> 📦 পরের ২৫ জনের ১টি ব্যাচ পাঠান (Batch #
+                    {progressStats.currentBatchNumber})
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleResumeBroadcast(activeJob, false)}
+                    className="flex flex-1 items-center justify-center gap-2 rounded-xl bg-emerald-500 py-2.5 text-[12px] font-extrabold text-black shadow hover:bg-emerald-400 active:scale-[0.99]"
+                  >
+                    <Play size={15} fill="currentColor" /> ▶️ সব ব্যাচ অটোমেটিক Resume করুন (বাকি{" "}
+                    {progressStats.remaining.toLocaleString()} জন)
+                  </button>
+                </>
               )
             )}
           </div>
@@ -856,15 +1025,20 @@ export function AdminBroadcastTab({ settings }: AdminBroadcastTabProps) {
         </div>
       </section>
 
-      {/* 👥 TARGET AUDIENCE SELECTION */}
+      {/* 👥 TARGET AUDIENCE & 25-USER BATCH INFO */}
       <section className="space-y-3 rounded-2xl bg-[#171a21] p-4">
-        <div className="flex items-center justify-between">
+        <div className="flex flex-wrap items-center justify-between gap-2">
           <h3 className="text-[13px] font-bold uppercase tracking-wider text-white/60">
-            👥 2. কাদের কাছে যাবে (Target Audience)
+            👥 2. কাদের কাছে যাবে (Target Audience & 25-User Batches)
           </h3>
-          <span className="rounded-full bg-emerald-500/20 px-3 py-1 text-[11px] font-extrabold text-emerald-300">
-            🎯 নির্বাচিত ইউজার: {targetUsersList.length.toLocaleString()} জন
-          </span>
+          <div className="flex items-center gap-2">
+            <span className="rounded-full bg-sky-500/20 px-3 py-1 text-[11px] font-extrabold text-sky-300">
+              📦 মোট ব্যাচ: {totalBatchesCount}টি (২৫ জন/ব্যাচ)
+            </span>
+            <span className="rounded-full bg-emerald-500/20 px-3 py-1 text-[11px] font-extrabold text-emerald-300">
+              🎯 মোট ইউজার: {targetUsersList.length.toLocaleString()} জন
+            </span>
+          </div>
         </div>
 
         <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
@@ -872,8 +1046,8 @@ export function AdminBroadcastTab({ settings }: AdminBroadcastTabProps) {
             [
               {
                 id: "all",
-                title: "সব User (All Users)",
-                desc: "ডাটাবেজের সকল রেজিস্টার্ড ইউজার",
+                title: "সব User (All Reachable Users)",
+                desc: "সকল বৈধ ইউজার (অ্যাক্টিভ ও ভেরিফাইড ইউজাররা প্রথম ব্যাচে থাকবে)",
               },
               {
                 id: "active",
@@ -893,7 +1067,7 @@ export function AdminBroadcastTab({ settings }: AdminBroadcastTabProps) {
               {
                 id: "language_group",
                 title: "নির্দিষ্ট ভাষা / গ্রুপ অনুযায়ী",
-                desc: "ভাষা (bn/en), ভেরিফাইড বা রেফারার গ্রুপ অনুযায়ী",
+                desc: "ভেরিফাইড গ্রুপ, রেফারার গ্রুপ বা ভাষা (bn/en) অনুযায়ী",
               },
             ] as const
           ).map((opt) => (
@@ -954,8 +1128,8 @@ export function AdminBroadcastTab({ settings }: AdminBroadcastTabProps) {
               className="w-full rounded-lg bg-black/60 px-3 py-2 text-[12px] font-semibold text-white outline-none ring-1 ring-white/10"
             >
               <option value="verified">✅ চ্যানেল ভেরিফাইড ইউজার (Channel Verified)</option>
-              <option value="unverified">⚠️ চ্যানেল আন-ভেরিফাইড ইউজার (Not Verified Yet)</option>
               <option value="referrers">👥 যারা অন্তত ১টি রেফার করেছে (Referrers Group)</option>
+              <option value="unverified">⚠️ চ্যানেল আন-ভেরিফাইড ইউজার (Not Verified Yet)</option>
               <option value="bn">🇧🇩 বাংলা ভাষা (Language: bn)</option>
               <option value="en">🇬🇧 English Language (Language: en)</option>
               <option value="all">🌍 সব ভাষা ও গ্রুপ (All)</option>
@@ -966,11 +1140,13 @@ export function AdminBroadcastTab({ settings }: AdminBroadcastTabProps) {
         <label className="flex cursor-pointer items-center gap-2 pt-1 text-[11px] text-white/70">
           <input
             type="checkbox"
-            checked={skipBlockedUsers}
-            onChange={(e) => setSkipBlockedUsers(e.target.checked)}
+            checked={skipBlockedAndInactive}
+            onChange={(e) => setSkipBlockedAndInactive(e.target.checked)}
             className="h-4 w-4 accent-emerald-500"
           />
-          <span>যারা আগে বট ব্লক করেছে (`is_blocked: true`) তাদের স্বয়ংক্রিয়ভাবে বাদ দিন (Recommended)</span>
+          <span>
+            যারা বট ব্লক করেছে বা এখনো বটে `/start` দেয়নি তাদের অটোমেটিক স্কিপ করুন (যেন Failed না আসে)
+          </span>
         </label>
       </section>
 
@@ -1098,7 +1274,7 @@ export function AdminBroadcastTab({ settings }: AdminBroadcastTabProps) {
         )}
       </section>
 
-      {/* 👁️ LIVE PREVIEW + SEND BUTTON */}
+      {/* 👁️ LIVE PREVIEW + 25-USER BATCH SEND BUTTONS */}
       <section className="space-y-3 rounded-2xl bg-[#171a21] p-4">
         <h3 className="text-[12px] font-bold uppercase tracking-wider text-white/50">
           👁️ লাইভ প্রিভিউ (Telegram Message Preview)
@@ -1141,7 +1317,7 @@ export function AdminBroadcastTab({ settings }: AdminBroadcastTabProps) {
                   .map((b, i) => (
                     <div
                       key={i}
-                      className=" truncate rounded-lg bg-[#2b5278]/80 px-2.5 py-2 text-center text-[11.5px] font-bold text-white"
+                      className="truncate rounded-lg bg-[#2b5278]/80 px-2.5 py-2 text-center text-[11.5px] font-bold text-white"
                     >
                       {b.text}
                     </div>
@@ -1150,19 +1326,33 @@ export function AdminBroadcastTab({ settings }: AdminBroadcastTabProps) {
             )}
         </div>
 
-        <button
-          type="button"
-          onClick={handleStartNewBroadcast}
-          disabled={isSending}
-          className="flex w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-emerald-500 to-teal-400 py-3.5 text-[14px] font-extrabold text-black shadow-lg transition hover:opacity-95 active:scale-[0.99] disabled:opacity-40"
-        >
-          <Send size={16} />
-          <span>
-            {isSending
-              ? "ব্রডকাস্ট চলছে..."
-              : `📢 Send Broadcast (${targetUsersList.length.toLocaleString()} Users)`}
-          </span>
-        </button>
+        <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+          <button
+            type="button"
+            onClick={() => handleStartNewBroadcast(true)}
+            disabled={isSending}
+            className="flex items-center justify-center gap-2 rounded-xl border border-sky-400/50 bg-sky-500/20 py-3.5 text-[13px] font-extrabold text-sky-300 shadow transition hover:bg-sky-500/30 active:scale-[0.99] disabled:opacity-40"
+          >
+            <Layers size={16} />
+            <span>
+              📦 ২৫ জনের ১টি ব্যাচ পাঠান (First {Math.min(BATCH_SIZE, targetUsersList.length)} Users)
+            </span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => handleStartNewBroadcast(false)}
+            disabled={isSending}
+            className="flex items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-emerald-500 to-teal-400 py-3.5 text-[13px] font-extrabold text-black shadow-lg transition hover:opacity-95 active:scale-[0.99] disabled:opacity-40"
+          >
+            <Send size={16} />
+            <span>
+              {isSending
+                ? "ব্রডকাস্ট চলছে..."
+                : `🚀 ২৫ জন করে সব ব্যাচ পাঠান (${targetUsersList.length.toLocaleString()} Users)`}
+            </span>
+          </button>
+        </div>
       </section>
 
       {/* 📜 BROADCAST HISTORY */}
@@ -1187,7 +1377,8 @@ export function AdminBroadcastTab({ settings }: AdminBroadcastTabProps) {
               const pct = Math.min(
                 100,
                 Math.round(
-                  ((item.lastProcessedIndex || item.sent + item.failed || 0) /
+                  ((item.lastProcessedIndex ||
+                    (item.sent || 0) + (item.failed || 0) + (item.skippedCount || 0)) /
                     Math.max(1, item.totalUsers || 1)) *
                     100
                 )
@@ -1212,7 +1403,8 @@ export function AdminBroadcastTab({ settings }: AdminBroadcastTabProps) {
                         </span>
                       </div>
                       <p className="mt-1.5 line-clamp-2 text-[12px] font-semibold text-white/90">
-                        Message: {item.text ? item.text.replace(/<[^>]*>/g, "") : "(Media Broadcast)"}
+                        Message:{" "}
+                        {item.text ? item.text.replace(/<[^>]*>/g, "") : "(Media Broadcast)"}
                       </p>
                     </div>
 
@@ -1233,7 +1425,7 @@ export function AdminBroadcastTab({ settings }: AdminBroadcastTabProps) {
                     </span>
                   </div>
 
-                  <div className="mt-2.5 grid grid-cols-3 gap-2 rounded-lg bg-black/40 p-2 text-center text-[11px]">
+                  <div className="mt-2.5 grid grid-cols-4 gap-2 rounded-lg bg-black/40 p-2 text-center text-[11px]">
                     <div>
                       <span className="text-white/40">Users: </span>
                       <span className="font-bold text-white">
@@ -1247,6 +1439,12 @@ export function AdminBroadcastTab({ settings }: AdminBroadcastTabProps) {
                       </span>
                     </div>
                     <div>
+                      <span className="text-white/40">Skipped: </span>
+                      <span className="font-bold text-sky-300">
+                        {(item.skippedCount || 0).toLocaleString()}
+                      </span>
+                    </div>
+                    <div>
                       <span className="text-white/40">Failed: </span>
                       <span className="font-bold text-red-400">
                         {(item.failed || 0).toLocaleString()}
@@ -1256,15 +1454,27 @@ export function AdminBroadcastTab({ settings }: AdminBroadcastTabProps) {
 
                   <div className="mt-2.5 flex flex-wrap items-center justify-end gap-2">
                     {canResume && (
-                      <button
-                        type="button"
-                        onClick={() => handleResumeBroadcast(item)}
-                        className="flex items-center gap-1 rounded-lg bg-emerald-500 px-3 py-1.5 text-[11px] font-extrabold text-black hover:bg-emerald-400"
-                      >
-                        <Play size={12} fill="currentColor" /> Resume (বাকি{" "}
-                        {Math.max(0, (item.totalUsers || 0) - (item.lastProcessedIndex || 0))}{" "}
-                        জন)
-                      </button>
+                      <>
+                        <button
+                          type="button"
+                          onClick={() => handleResumeBroadcast(item, true)}
+                          className="flex items-center gap-1 rounded-lg bg-sky-500 px-3 py-1.5 text-[11px] font-extrabold text-black hover:bg-sky-400"
+                        >
+                          <Layers size={12} /> +২৫ জনের ১টি ব্যাচ পাঠান
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleResumeBroadcast(item, false)}
+                          className="flex items-center gap-1 rounded-lg bg-emerald-500 px-3 py-1.5 text-[11px] font-extrabold text-black hover:bg-emerald-400"
+                        >
+                          <Play size={12} fill="currentColor" /> সব ব্যাচ Resume করুন (বাকি{" "}
+                          {Math.max(
+                            0,
+                            (item.totalUsers || 0) - (item.lastProcessedIndex || 0)
+                          )}{" "}
+                          জন)
+                        </button>
+                      </>
                     )}
                     <button
                       type="button"

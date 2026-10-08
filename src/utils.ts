@@ -19,6 +19,7 @@ declare global {
             username?: string;
             photo_url?: string;
             language_code?: string;
+            allows_write_to_pm?: boolean;
           };
           start_param?: string;
         };

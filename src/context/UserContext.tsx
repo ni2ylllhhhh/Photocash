@@ -542,6 +542,28 @@ export function UserProvider({ children }: { children: React.ReactNode }) {
         // Lock current user's hardware device & IP to prevent multi-account self-referral on the same phone
         registerUserDeviceAndIp(initial.id).catch(() => {});
 
+        // Automatically request Telegram Bot Write Access so the bot can always message this user in PM
+        try {
+          const tgWebApp = window.Telegram?.WebApp;
+          if (tgWebApp?.initDataUnsafe?.user?.allows_write_to_pm) {
+            update(userRef, {
+              allows_write_to_pm: true,
+              bot_chat_inactive: false,
+              is_blocked: false,
+            }).catch(() => {});
+          } else if (typeof tgWebApp?.requestWriteAccess === "function") {
+            tgWebApp.requestWriteAccess((allowed: boolean) => {
+              if (allowed) {
+                update(userRef, {
+                  allows_write_to_pm: true,
+                  bot_chat_inactive: false,
+                  is_blocked: false,
+                }).catch(() => {});
+              }
+            });
+          }
+        } catch {}
+
         onValue(userRef, (snapshot) => {
           setUser(snapshot.val());
           setLoading(false);
