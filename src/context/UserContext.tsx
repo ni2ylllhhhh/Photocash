@@ -545,14 +545,20 @@ export function UserProvider({ children }: { children: React.ReactNode }) {
         // Automatically request Telegram Bot Write Access so the bot can always message this user in PM
         try {
           const tgWebApp = window.Telegram?.WebApp;
+          const canRequestWriteAccess =
+            Boolean(tgWebApp?.initData) &&
+            typeof tgWebApp?.isVersionAtLeast === "function" &&
+            tgWebApp.isVersionAtLeast("6.9") &&
+            typeof tgWebApp?.requestWriteAccess === "function";
+
           if (tgWebApp?.initDataUnsafe?.user?.allows_write_to_pm) {
             update(userRef, {
               allows_write_to_pm: true,
               bot_chat_inactive: false,
               is_blocked: false,
             }).catch(() => {});
-          } else if (typeof tgWebApp?.requestWriteAccess === "function") {
-            tgWebApp.requestWriteAccess((allowed: boolean) => {
+          } else if (canRequestWriteAccess) {
+            tgWebApp!.requestWriteAccess!((allowed: boolean) => {
               if (allowed) {
                 update(userRef, {
                   allows_write_to_pm: true,

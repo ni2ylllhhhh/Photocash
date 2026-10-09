@@ -171,7 +171,7 @@ export function UserProfilePage() {
       )}
 
       <CommentModal
-        post={commentPost}
+        post={(commentPost && allPosts.find((p) => p.id === commentPost.id)) || commentPost}
         onClose={() => setCommentPost(null)}
       />
     </LayoutShell>

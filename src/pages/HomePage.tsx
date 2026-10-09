@@ -11,6 +11,7 @@ import { StoriesBar } from "../components/StoriesBar";
 import { PostCard } from "../components/PostCard";
 import { AdBanner } from "../components/AdBanner";
 import { CommentModal } from "../components/CommentModal";
+import { getPostLikesCount } from "../utils/postEngagement";
 import {
   Image as ImageIcon,
   Sparkles,
@@ -75,7 +76,7 @@ export function HomePage() {
     }
     if (currentTab === "Top earners") {
       result = [...result].sort(
-        (a, b) => Object.keys(b.likes || {}).length - Object.keys(a.likes || {}).length
+        (a, b) => getPostLikesCount(b) - getPostLikesCount(a)
       );
     }
     if (searchQuery.trim()) {

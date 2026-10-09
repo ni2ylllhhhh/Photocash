@@ -3,7 +3,8 @@ import { createServer as createViteServer } from "vite";
 import path from "path";
 import { fileURLToPath } from "url";
 import { GoogleGenAI } from "@google/genai";
-import "./bot-daemon.js";
+// @ts-ignore
+import { ensureBotPollingAlive, getBotHealth, processTelegramUpdate } from "./bot-daemon.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -39,6 +40,25 @@ async function startServer() {
   const app = express();
   app.use(express.json({ limit: "2mb" }));
 
+  // 0. Bot Health & Watchdog Wakeup Endpoint
+  app.get("/api/bot-health", (_req, res) => {
+    const check = ensureBotPollingAlive();
+    const health = getBotHealth();
+    res.setHeader("Access-Control-Allow-Origin", "*");
+    res.setHeader("Cache-Control", "no-store");
+    return res.json({ ...health, watchdog: check, timestamp: Date.now() });
+  });
+
+  // Optional Webhook Receiver (if webhook mode is used alongside or instead of polling)
+  app.post(["/api/bot", "/webhook"], async (req, res) => {
+    try {
+      await processTelegramUpdate(req.body);
+      return res.status(200).send("OK");
+    } catch {
+      return res.status(200).send("OK");
+    }
+  });
+
   // 1. Server-side Telegram sendMessage proxy
   app.post("/api/send-message", async (req, res) => {
     try {
@@ -59,6 +79,7 @@ async function startServer() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
+        signal: AbortSignal.timeout(10000),
       });
       const data = await tgRes.json();
       return res.json(data);
@@ -90,7 +111,7 @@ async function startServer() {
         const url = `https://api.telegram.org/bot${token}/getChatMember?chat_id=${encodeURIComponent(
           chatIdParam
         )}&user_id=${encodeURIComponent(String(user_id))}`;
-        const tgRes = await fetch(url);
+        const tgRes = await fetch(url, { signal: AbortSignal.timeout(8000) });
         const data: any = await tgRes.json();
         const status = data?.result?.status;
         const joined = ["creator", "administrator", "member", "restricted"].includes(status);
@@ -112,7 +133,7 @@ async function startServer() {
         return res.status(503).json({ error: "Gemini API not configured on server" });
       }
       const response = await ai.models.generateContent({
-        model: "gemini-3.8-flash",
+        model: "gemini-3-flash-preview",
         contents: `ইউজার (${userName || "User"}) বলছে: "${prompt || "হ্যালো"}"`,
       });
       return res.json({ text: response.text || "" });
@@ -138,6 +159,7 @@ async function startServer() {
   const PORT = Number(process.env.PORT) || 3000;
   app.listen(PORT, "0.0.0.0", () => {
     console.log(`PhotoCash Server & AI Telegram Bot running on http://0.0.0.0:${PORT}`);
+    ensureBotPollingAlive();
   });
 }
 

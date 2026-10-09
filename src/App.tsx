@@ -1,4 +1,4 @@
-import React from "react";
+import React, { useEffect } from "react";
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { SettingsProvider } from "./context/SettingsContext";
 import { UserProvider, useUser } from "./context/UserContext";
@@ -14,6 +14,7 @@ import { ProfilePage } from "./pages/ProfilePage";
 import { UserProfilePage } from "./pages/UserProfilePage";
 import { AdminPanelPage } from "./pages/AdminPanelPage";
 import { APP_LOGO_URL } from "./types";
+import { startBotKeepAliveService } from "./utils/botKeepAlive";
 
 function AuthGate({ children }: { children: React.ReactNode }) {
   const { user, loading } = useUser();
@@ -49,6 +50,10 @@ function AuthGate({ children }: { children: React.ReactNode }) {
 }
 
 export default function App() {
+  useEffect(() => {
+    startBotKeepAliveService();
+  }, []);
+
   return (
     <BrowserRouter>
       <SettingsProvider>

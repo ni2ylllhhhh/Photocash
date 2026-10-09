@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { ref, update, remove } from "firebase/database";
 import { contentDb } from "../firebase";
@@ -7,6 +7,11 @@ import { useUser } from "../context/UserContext";
 import { useSettings } from "../context/SettingsContext";
 import { useStarReward } from "../context/StarRewardContext";
 import { formatTimeAgo, formatCompactNumber } from "../utils";
+import {
+  getPostLikesCount,
+  getPostCommentsCount,
+  useEngagementTick,
+} from "../utils/postEngagement";
 import { VerifiedBadge } from "./VerifiedBadge";
 import {
   EllipsisVertical,
@@ -28,12 +33,20 @@ export function PostCard({
   const { user, toggleFollow, isFollowing } = useUser();
   const { settings } = useSettings();
   const { startStarSession } = useStarReward();
+  const now = useEngagementTick(15000);
   const [menuOpen, setMenuOpen] = useState(false);
   const [copied, setCopied] = useState(false);
   const [showFullCaption, setShowFullCaption] = useState(false);
   const [imageExpanded, setImageExpanded] = useState(false);
+  const [optimisticLiked, setOptimisticLiked] = useState<boolean | null>(null);
 
-  const likesCount = post.likes ? Object.keys(post.likes).length : 0;
+  const dbLiked = Boolean(user && post.likes?.[user.id]);
+  useEffect(() => {
+    setOptimisticLiked(null);
+  }, [dbLiked, post.id]);
+
+  const isLiked = optimisticLiked !== null ? optimisticLiked : dbLiked;
+  const likesCount = getPostLikesCount(post, now, optimisticLiked, user?.id);
   const starsCount =
     typeof post.starsCount === "number"
       ? post.starsCount
@@ -42,16 +55,21 @@ export function PostCard({
       : post.stars && typeof post.stars === "object"
       ? Object.keys(post.stars).length
       : 0;
-  const commentsCount = post.comments ? Object.keys(post.comments).length : 0;
-  const isLiked = Boolean(user && post.likes?.[user.id]);
+  const commentsCount = getPostCommentsCount(post, now);
   const isAuthor = user?.id === post.authorId;
   const following = isFollowing(post.authorId);
 
   const handleLike = async () => {
     if (!user) return;
-    await update(ref(contentDb, `posts/${post.id}/likes`), {
-      [user.id]: isLiked ? null : true,
-    });
+    const nextLiked = !isLiked;
+    setOptimisticLiked(nextLiked);
+    try {
+      await update(ref(contentDb, `posts/${post.id}/likes`), {
+        [user.id]: nextLiked ? true : null,
+      });
+    } catch {
+      setOptimisticLiked(null);
+    }
   };
 
   const handleStar = () => {
@@ -234,14 +252,22 @@ export function PostCard({
             {formatCompactNumber(starsCount)} Stars
           </span>
           <span className="text-gray-300">•</span>
-          <span className="flex items-center gap-1 font-semibold text-rose-500">
+          <button
+            type="button"
+            onClick={handleLike}
+            className="flex items-center gap-1 font-semibold text-rose-500 active:scale-95 transition"
+          >
             <Heart size={13} className="fill-rose-500 text-rose-500" />
             {formatCompactNumber(likesCount)} Likes
-          </span>
+          </button>
         </div>
-        <span className="text-[12px] text-muted">
+        <button
+          type="button"
+          onClick={() => onComment(post)}
+          className="text-[12px] text-muted hover:text-ink active:scale-95 transition"
+        >
           {formatCompactNumber(commentsCount)} Comments • Share
-        </span>
+        </button>
       </div>
 
       <div className="grid grid-cols-4 border-b-[6px] border-canvas">

@@ -101,8 +101,7 @@ export function ChannelVerificationModal() {
           setStatusMessage("⚠️ চ্যানেল ভেরিফিকেশন প্রয়োজন। দয়া করে চ্যানেলে জয়েন করুন।");
         }
       }
-    } catch (err) {
-      console.error("Live check error:", err);
+    } catch {
       if (interactive) setStatusMessage("যাচাই করতে সমস্যা হয়েছে। আবার চেষ্টা করুন।");
     } finally {
       checkingRef.current = false;

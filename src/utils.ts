@@ -4,6 +4,8 @@ declare global {
   interface Window {
     Telegram?: {
       WebApp?: {
+        version?: string;
+        isVersionAtLeast?: (version: string) => boolean;
         ready: () => void;
         expand: () => void;
         openTelegramLink: (url: string) => void;

@@ -207,6 +207,7 @@ export interface Comment {
   name: string;
   photo: string;
   emoji: string;
+  text?: string;
   createdAt: number;
 }
 

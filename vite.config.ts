@@ -122,12 +122,7 @@ export default defineConfig(() => {
             });
           });
 
-          // Launch Telegram Bot Polling Worker asynchronously after server starts listening
-          setTimeout(() => {
-            import('./bot-daemon.js').catch((err) => {
-              console.error('Telegram bot worker startup error:', err);
-            });
-          }, 1000);
+          // Bot daemon is managed by server.ts with global singleton & watchdog protection
         },
       },
     ],

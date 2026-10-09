@@ -97,14 +97,24 @@ export default {
         }
       }
 
-      // If user joined all channels, sync to Firebase
+      // If user joined all channels, sync to Firebase & credit pending referral if any
       if (allJoined) {
         try {
-          await fetch(`${USER_DB_URL}/users/${userId}.json`, {
-            method: "PATCH",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ channelsVerified: true, channelsVerifiedAt: Date.now() }),
+          const existingUser = await getFirebaseUser(USER_DB_URL, userId);
+          await updateFirebaseUser(USER_DB_URL, userId, {
+            channelsVerified: true,
+            channelsVerifiedAt: Date.now(),
           });
+          if (existingUser?.referredBy) {
+            await processReferral(
+              BOT_TOKEN,
+              USER_DB_URL,
+              existingUser.referredBy,
+              userId,
+              existingUser.name || "User",
+              REFER_BONUS
+            );
+          }
         } catch {}
       }
 
@@ -129,20 +139,28 @@ export default {
           const data = cb.data;
 
           if (data === "verify_channels") {
-            // Check membership for all required channels
             const checkResults = await checkUserChannels(BOT_TOKEN, REQUIRED_CHANNELS, userId);
 
             if (checkResults.allJoined) {
-              // Update Firebase database
+              const existingUser = await getFirebaseUser(USER_DB_URL, userId);
               await updateFirebaseUser(USER_DB_URL, userId, {
                 channelsVerified: true,
                 channelsVerifiedAt: Date.now(),
               });
 
-              // Answer callback query with popup alert
+              if (existingUser?.referredBy) {
+                await processReferral(
+                  BOT_TOKEN,
+                  USER_DB_URL,
+                  existingUser.referredBy,
+                  userId,
+                  existingUser.name || from.first_name || "User",
+                  REFER_BONUS
+                );
+              }
+
               await answerCallbackQuery(BOT_TOKEN, cb.id, "🎉 ভেরিফিকেশন সফল হয়েছে!", false);
 
-              // Send congratulations message with App launch button
               await sendTelegramMessage(BOT_TOKEN, chatId, {
                 text:
                   `🎉 <b>অভিনন্দন ${escapeHtml(from.first_name)}!</b>\n\n` +
@@ -151,13 +169,11 @@ export default {
                   `👇 নিচের বাটনে ক্লিক করে PhotoCash ওপেন করুন:`,
                 reply_markup: {
                   inline_keyboard: [
-                    [{ text: "📸 Open PhotoCash App", web_app: { url: WEB_APP_URL } }],
-                    [{ text: "💬 Support Community", url: "https://t.me/Click2Cash_Site" }],
+                    [{ text: "📸 Open Photo cash App", web_app: { url: WEB_APP_URL } }],
                   ],
                 },
               });
             } else {
-              // Not joined all channels
               await answerCallbackQuery(
                 BOT_TOKEN,
                 cb.id,
@@ -187,17 +203,18 @@ export default {
             const referrerId =
               refParam && refParam !== userId && /^\d+$/.test(refParam) ? refParam : null;
 
-            // Check if user is in channels
             const checkResults = await checkUserChannels(BOT_TOKEN, REQUIRED_CHANNELS, userId);
-
-            // Register or fetch user in Firebase
             let user = await getFirebaseUser(USER_DB_URL, userId);
+            const nowTs = Date.now();
 
             if (!user) {
               user = {
                 id: userId,
+                user_id: userId,
                 name: [from.first_name, from.last_name].filter(Boolean).join(" ") || "Telegram User",
+                first_name: from.first_name || "User",
                 username: from.username || `user_${userId.slice(-4)}`,
+                language: from.language_code || "en",
                 photo: `https://ui-avatars.com/api/?name=${encodeURIComponent(
                   from.first_name || "U"
                 )}&background=f7841f&color=fff&size=128&bold=true`,
@@ -212,10 +229,15 @@ export default {
                 l3Referrals: 0,
                 referredBy: referrerId,
                 channelsVerified: checkResults.allJoined,
-                channelsVerifiedAt: checkResults.allJoined ? Date.now() : 0,
+                channelsVerifiedAt: checkResults.allJoined ? nowTs : 0,
                 binanceId: "",
-                createdAt: Date.now(),
-                lastAccrual: Date.now(),
+                createdAt: nowTs,
+                joined_at: nowTs,
+                last_active: nowTs,
+                allows_write_to_pm: true,
+                bot_chat_inactive: false,
+                is_blocked: false,
+                lastAccrual: nowTs,
               };
 
               await createFirebaseUser(USER_DB_URL, userId, user);
@@ -223,21 +245,34 @@ export default {
                 type: "signup_bonus",
                 amount: SIGNUP_BONUS,
                 note: "Welcome signup bonus",
-                createdAt: Date.now(),
+                createdAt: nowTs,
               });
 
-              // Process referral bonus if applicable
-              if (referrerId) {
+              // Process referral bonus ONLY if user has joined the required channels!
+              if (referrerId && checkResults.allJoined) {
                 await processReferral(BOT_TOKEN, USER_DB_URL, referrerId, userId, from.first_name, REFER_BONUS);
               }
-            } else if (checkResults.allJoined && !user.channelsVerified) {
+            } else {
+              const effectiveRef = user.referredBy || referrerId || null;
               await updateFirebaseUser(USER_DB_URL, userId, {
-                channelsVerified: true,
-                channelsVerifiedAt: Date.now(),
+                user_id: userId,
+                first_name: from.first_name || user.first_name || "User",
+                language: from.language_code || user.language || "en",
+                last_active: nowTs,
+                allows_write_to_pm: true,
+                bot_chat_inactive: false,
+                is_blocked: false,
+                ...(effectiveRef && !user.referredBy ? { referredBy: effectiveRef } : {}),
+                ...(checkResults.allJoined
+                  ? { channelsVerified: true, channelsVerifiedAt: nowTs }
+                  : {}),
               });
+
+              if (checkResults.allJoined && effectiveRef) {
+                await processReferral(BOT_TOKEN, USER_DB_URL, effectiveRef, userId, from.first_name, REFER_BONUS);
+              }
             }
 
-            // If user has NOT joined channels, prompt them to join with verification button
             if (!checkResults.allJoined) {
               const channelKeyboard = [
                 [{ text: "📢 1. Join Main Channel", url: "https://t.me/jgjghjghh687" }],
@@ -249,14 +284,13 @@ export default {
                 text:
                   `👋 <b>স্বাগতম ${escapeHtml(from.first_name)}!</b>\n\n` +
                   `⚠️ <b>চ্যানেল ভেরিফিকেশন আবশ্যক:</b>\n` +
-                  `PhotoCash Mini App ব্যবহার করতে আপনাকে অবশ্যই আমাদের নিচের ২টি চ্যানেলে জয়েন থাকতে হবে:\n\n` +
+                  `PhotoCash Mini App ব্যবহার করতে এবং রেফারেল বোনাস অ্যাক্টিভ করতে আপনাকে অবশ্যই আমাদের নিচের ২টি চ্যানেলে জয়েন থাকতে হবে:\n\n` +
                   `1️⃣ <b>Main Channel:</b> @jgjghjghh687\n` +
                   `2️⃣ <b>Support Channel:</b> @Earning_Money_Lob\n\n` +
                   `চ্যানেলে জয়েন করে নিচের <b>"✅ Check & Verify"</b> বাটনে চাপুন।`,
                 reply_markup: { inline_keyboard: channelKeyboard },
               });
             } else {
-              // User has verified channels! Send app launch button
               const appUrl = referrerId ? `${WEB_APP_URL}?startapp=${referrerId}` : WEB_APP_URL;
 
               await sendTelegramMessage(BOT_TOKEN, chatId, {
@@ -274,7 +308,6 @@ export default {
               });
             }
           } else {
-            // AI CHATBOT REPLY FOR ANY GENERAL MESSAGE OR QUESTION
             const aiReply = await generatePhotoCashSmartReply(text, from.first_name);
             await sendTelegramMessage(BOT_TOKEN, chatId, {
               text: escapeHtml(aiReply),
@@ -288,9 +321,8 @@ export default {
         }
 
         return new Response("OK", { status: 200 });
-      } catch (err) {
-        console.error("Webhook processing error:", err);
-        return new Response("Error", { status: 500 });
+      } catch {
+        return new Response("OK", { status: 200 });
       }
     }
 
@@ -384,9 +416,7 @@ async function sendTelegramMessage(botToken, chatId, payload) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     });
-  } catch (err) {
-    console.error("sendTelegramMessage error:", err);
-  }
+  } catch {}
 }
 
 async function answerCallbackQuery(botToken, callbackQueryId, text, showAlert = false) {
@@ -400,9 +430,7 @@ async function answerCallbackQuery(botToken, callbackQueryId, text, showAlert = 
         show_alert: showAlert,
       }),
     });
-  } catch (err) {
-    console.error("answerCallbackQuery error:", err);
-  }
+  } catch {}
 }
 
 async function getFirebaseUser(dbUrl, userId) {
@@ -421,9 +449,7 @@ async function createFirebaseUser(dbUrl, userId, data) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(data),
     });
-  } catch (err) {
-    console.error("createFirebaseUser error:", err);
-  }
+  } catch {}
 }
 
 async function updateFirebaseUser(dbUrl, userId, data) {
@@ -433,9 +459,7 @@ async function updateFirebaseUser(dbUrl, userId, data) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(data),
     });
-  } catch (err) {
-    console.error("updateFirebaseUser error:", err);
-  }
+  } catch {}
 }
 
 async function addFirebaseHistory(dbUrl, userId, item) {
@@ -445,20 +469,18 @@ async function addFirebaseHistory(dbUrl, userId, item) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(item),
     });
-  } catch (err) {
-    console.error("addFirebaseHistory error:", err);
-  }
+  } catch {}
 }
 
 async function processReferral(botToken, dbUrl, referrerId, newUserId, newUserName, bonus) {
   try {
     if (!referrerId || referrerId === newUserId) return;
 
-    // Atomic duplicate lock
     const lockRes = await fetch(`${dbUrl}/referred_records/${newUserId}.json`);
     const existingLock = lockRes.ok ? await lockRes.json() : null;
     if (existingLock) return;
 
+    const nowTs = Date.now();
     await fetch(`${dbUrl}/referred_records/${newUserId}.json`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
@@ -466,7 +488,22 @@ async function processReferral(botToken, dbUrl, referrerId, newUserId, newUserNa
         referrerId,
         newUserId,
         newUserName,
-        creditedAt: Date.now(),
+        channelsVerified: true,
+        creditedAt: nowTs,
+        messageSent: true,
+      }),
+    });
+
+    await fetch(`${dbUrl}/referrals/${referrerId}/${newUserId}.json`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        id: newUserId,
+        name: newUserName || "User",
+        username: `user_${String(newUserId).slice(-4)}`,
+        photo: `https://ui-avatars.com/api/?name=U&background=f7841f&color=fff&size=128&bold=true`,
+        channelsVerified: true,
+        joinedAt: nowTs,
       }),
     });
 
@@ -481,23 +518,24 @@ async function processReferral(botToken, dbUrl, referrerId, newUserId, newUserNa
         balance: newBalance,
         totalEarned: newTotal,
         referrals: newRefs,
+        lastReferralAt: nowTs,
       });
 
       await addFirebaseHistory(dbUrl, referrerId, {
         type: "referral_l1",
         amount: bonus,
-        note: `Direct referral bonus — ${newUserName || "User"}`,
-        createdAt: Date.now(),
+        note: `Verified referral bonus — ${newUserName || "User"}`,
+        createdAt: nowTs,
       });
     }
 
     const safeName = escapeHtml(newUserName || "User");
 
-    // 1. Notify Referrer
     await sendTelegramMessage(botToken, referrerId, {
       text:
-        `🎉 <b>অভিনন্দন! নতুন রেফারেল জয়েন করেছে!</b>\n\n` +
+        `🎉 <b>অভিনন্দন! নতুন ভেরিফাইড রেফারেল জয়েন করেছে!</b>\n\n` +
         `👤 <b>নাম:</b> ${safeName}\n` +
+        `✅ <b>চ্যানেল জয়েন:</b> সম্পন্ন (Verified)\n` +
         `💰 <b>বোনাস:</b> আপনার মূল ব্যালেন্সে <b>+$${bonus.toFixed(2)} USDT</b> রেফার বোনাস যোগ হয়েছে!\n` +
         `👥 <b>মোট রেফার:</b> ${newRefs} জন\n\n` +
         `আরো বেশি ইনকাম করতে আপনার রেফার লিংক শেয়ার করুন! 🚀`,
@@ -507,23 +545,7 @@ async function processReferral(botToken, dbUrl, referrerId, newUserId, newUserNa
         ],
       },
     });
-
-    // 2. Notify New User
-    await sendTelegramMessage(botToken, newUserId, {
-      text:
-        `🎉 <b>অভিনন্দন ${safeName}! রেফারেল জয়েন সফল হয়েছে! 📸💸</b>\n\n` +
-        `✅ আপনি রেফারেল লিংকের মাধ্যমে <b>PhotoCash</b>-এ জয়েন করেছেন।\n` +
-        `💰 আপনার মূল ব্যালেন্সে <b>+$0.50 USDT</b> ওয়েলকাম বোনাস যোগ হয়েছে!\n\n` +
-        `এখনি ফটো আপলোড ও স্টার দিয়ে প্রতিদিন ইনকাম শুরু করুন! 🚀`,
-      reply_markup: {
-        inline_keyboard: [
-          [{ text: "📸 Open Photo cash App", web_app: { url: "https://photocash.ziniyaapu7.workers.dev" } }],
-        ],
-      },
-    });
-  } catch (err) {
-    console.error("processReferral error:", err);
-  }
+  } catch {}
 }
 
 const GEMINI_VAULT_BYTES = [
@@ -535,6 +557,31 @@ const GEMINI_VAULT_BYTES = [
 async function generatePhotoCashSmartReply(userText, userName) {
   const cleanText = String(userText || "").trim();
   const q = cleanText.toLowerCase();
+  const name = userName || "বন্ধু";
+
+  // Instant smart intent replies so broadcast replies never hit Gemini 429 rate limits
+  if (
+    (q.includes("পেমেন্ট") || q.includes("টাকা") || q.includes("payment") || q.includes("withdraw")) &&
+    (q.includes("পাইনি") || q.includes("পাইতাছি না") || q.includes("আসেনি") || q.includes("আসে নাই") || q.includes("কেন"))
+  ) {
+    return (
+      "ওয়েবসাইটের মধ্যে ঢুইকা দেখো তুমি নাম্বার সব ঠিকঠাক দিছো কিনা। সঠিক এড্রেস না দিলে টাকা আসবে না। " +
+      "ভুল নাম্বার দিলে ভুল নাম্বারে টাকা চলে যাবে—এতে কর্তৃপক্ষের কোনো দায়ী নয়। তাই সঠিক নাম্বার দিন ও চেক করুন।"
+    );
+  }
+
+  if (q.includes("পেমেন্ট দেয়") || q.includes("রিয়েল") || q.includes("রিয়েল") || q === "পেমেন্ট" || q === "payment") {
+    return "১০০% এখানে পেমেন্ট করে! এটি একদম রিয়েল ওয়েবসাইট, কখনো পেমেন্ট মিস করে না। আপনি চাইলে আমাদের পেমেন্ট প্রুফ অটো সিস্টেম দেখতে পারেন।";
+  }
+
+  if (q.includes("সালাম") || q.includes("salam") || q.includes("assalamu")) {
+    return `ওয়ালাইকুম আসসালাম ${name}! 😊 আলহামদুলিল্লাহ ভালো আছি। আপনার দিনকাল কেমন যাচ্ছে?`;
+  }
+
+  if (/^(hi+|hello+|hey+|hlw+|হাই+|হ্যালো+|হেলো+)$/i.test(q)) {
+    return `হ্যালো ${name}! 😊 কেমন আছেন? Photo cash-এ ফটো আপলোড ও ইনকাম কেমন চলছে?`;
+  }
+
   const wantsAppDetails =
     q.includes("অ্যাপ") ||
     q.includes("এপ") ||
@@ -582,7 +629,7 @@ async function generatePhotoCashSmartReply(userText, userName) {
 
   try {
     const res = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite:generateContent?key=${geminiKey}`,
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:generateContent?key=${geminiKey}`,
       {
         method: "POST",
         headers: { "Content-Type": "application/json", "User-Agent": "aistudio-build" },
@@ -591,9 +638,9 @@ async function generatePhotoCashSmartReply(userText, userName) {
           contents: [{ role: "user", parts: [{ text: cleanText }] }],
           generationConfig: {
             temperature: 0.8,
-            thinkingConfig: { thinkingLevel: "MINIMAL" },
           },
         }),
+        signal: AbortSignal.timeout(5000),
       }
     );
     if (res.ok) {
@@ -603,6 +650,29 @@ async function generatePhotoCashSmartReply(userText, userName) {
         .trim();
       if (aiText) {
         return aiText.length > maxChars ? aiText.slice(0, maxChars - 1) + "…" : aiText;
+      }
+    }
+  } catch {}
+
+  try {
+    const pollRes = await fetch("https://text.pollinations.ai/openai", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: "openai",
+        messages: [
+          { role: "system", content: systemInstruction },
+          { role: "user", content: cleanText },
+        ],
+      }),
+    });
+    if (pollRes.ok) {
+      const pollData = await pollRes.json();
+      const reply = (pollData?.choices?.[0]?.message?.content || "")
+        .replace(/\*/g, "")
+        .trim();
+      if (reply) {
+        return reply.length > maxChars ? reply.slice(0, maxChars - 1) + "…" : reply;
       }
     }
   } catch {}

@@ -12,6 +12,7 @@ import {
   formatCompactNumber,
   uploadImageToImgbb,
 } from "../utils";
+import { getPostLikesCount, useEngagementTick } from "../utils/postEngagement";
 import {
   Ellipsis,
   Pencil,
@@ -27,6 +28,7 @@ export function ProfilePage() {
   const navigate = useNavigate();
   const { user, updateUser } = useUser();
   const { settings } = useSettings();
+  const now = useEngagementTick(15000);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [tab, setTab] = useState<"grid" | "photos" | "reels">("grid");
@@ -213,7 +215,7 @@ export function ProfilePage() {
                   className="h-full w-full object-cover"
                 />
                 <span className="absolute bottom-1 right-1 rounded-full bg-black/60 px-1.5 py-0.5 text-[9px] font-bold text-white">
-                  ❤️ {Object.keys(post.likes || {}).length}
+                  ❤️ {formatCompactNumber(getPostLikesCount(post, now))}
                 </span>
               </button>
             ))}
