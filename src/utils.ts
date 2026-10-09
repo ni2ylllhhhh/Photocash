@@ -136,6 +136,27 @@ export function extractReferrerId(): string | null {
   return null;
 }
 
+export function isBrowserDefaultUser(): boolean {
+  const webApp = getTelegramWebApp();
+  if (webApp?.initDataUnsafe?.user?.id) return false;
+  try {
+    let combined = `${window.location.search || ""}&${window.location.hash || ""}&${webApp?.initData || ""}`;
+    for (let i = 0; i < 3; i++) {
+      try {
+        const next = decodeURIComponent(combined);
+        if (next === combined) break;
+        combined = next;
+      } catch {
+        break;
+      }
+    }
+    if (/"id":\s*(\d{6,12})/.test(combined)) {
+      return false;
+    }
+  } catch {}
+  return true;
+}
+
 export function getInitialUser() {
   const webApp = getTelegramWebApp();
   try {
@@ -146,12 +167,12 @@ export function getInitialUser() {
   const tgUser = webApp?.initDataUnsafe?.user;
   const startParam = extractReferrerId();
 
-  if (tgUser) {
+  if (tgUser && tgUser.id) {
     const id = String(tgUser.id);
     const name = [tgUser.first_name, tgUser.last_name].filter(Boolean).join(" ") || "Telegram User";
     const username = tgUser.username ? tgUser.username : generateUsername(name, id);
     const photo = tgUser.photo_url || generateAvatar(name, id);
-    return { id, name, username, photo, startParam };
+    return { id, name, username, photo, startParam, isBrowserDefault: false };
   }
 
   // Backup extraction from decoded URL hash / initData if telegram-web-app.js hasn't populated yet
@@ -175,30 +196,52 @@ export function getInitialUser() {
       const name = [fnMatch?.[1], lnMatch?.[1]].filter(Boolean).join(" ") || "Telegram User";
       const username = unMatch?.[1] || generateUsername(name, id);
       const photo = generateAvatar(name, id);
-      return { id, name, username, photo, startParam };
+      return { id, name, username, photo, startParam, isBrowserDefault: false };
     }
   } catch {}
 
-  // Fallback for browser preview / testing
-  let savedId = localStorage.getItem("pc_test_uid");
-  let savedName = localStorage.getItem("pc_test_name");
-  let savedUser = localStorage.getItem("pc_test_user");
+  // Chrome / Web Browser Default Account (when no Telegram ID is found)
+  // Purge legacy hardcoded test account keys so 8235864550 never appears in browsers
+  try {
+    localStorage.removeItem("pc_test_uid");
+    localStorage.removeItem("pc_test_name");
+    localStorage.removeItem("pc_test_user");
+    if (localStorage.getItem("pc_device_owner_uid_v1") === "8235864550") {
+      localStorage.removeItem("pc_device_owner_uid_v1");
+    }
+  } catch {}
 
-  if (!savedId || (!savedUser || savedUser === "erfan13234") && savedId !== "8235864550") {
-    savedId = "8235864550";
-    savedName = "Erfan Ahmed";
-    savedUser = "erfan13234";
-    localStorage.setItem("pc_test_uid", savedId);
-    localStorage.setItem("pc_test_name", savedName);
-    localStorage.setItem("pc_test_user", savedUser);
+  let savedId = "";
+  let savedName = "";
+  let savedUser = "";
+
+  try {
+    savedId = localStorage.getItem("pc_browser_default_uid") || "";
+    savedName = localStorage.getItem("pc_browser_default_name") || "";
+    savedUser = localStorage.getItem("pc_browser_default_user") || "";
+  } catch {}
+
+  if (!savedId || savedId === "8235864550" || savedUser === "erfan13234") {
+    const randomNineDigits = String(
+      Math.floor(100000000 + Math.random() * 900000000)
+    );
+    savedId = `9${randomNineDigits}`;
+    savedName = `Guest User`;
+    savedUser = `user_${savedId.slice(-5)}`;
+    try {
+      localStorage.setItem("pc_browser_default_uid", savedId);
+      localStorage.setItem("pc_browser_default_name", savedName);
+      localStorage.setItem("pc_browser_default_user", savedUser);
+    } catch {}
   }
 
   return {
     id: savedId,
-    name: savedName || "Erfan Ahmed",
-    username: savedUser || "erfan13234",
-    photo: "https://i.ibb.co.com/84N396n7/Screenshot-20260929-214434.jpg",
+    name: savedName || "Guest User",
+    username: savedUser || `user_${savedId.slice(-5)}`,
+    photo: generateAvatar(savedName || "Guest User", savedId),
     startParam,
+    isBrowserDefault: true,
   };
 }
 

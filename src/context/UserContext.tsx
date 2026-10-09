@@ -12,6 +12,7 @@ import { User, Settings, defaultSettings } from "../types";
 import { useSettings } from "./SettingsContext";
 import {
   getInitialUser,
+  isBrowserDefaultUser,
   sendTelegramBotMessage,
   generateAvatar,
   extractReferrerId,
@@ -76,6 +77,7 @@ export function UserProvider({ children }: { children: React.ReactNode }) {
       explicitReferrerId?: string | null
     ): Promise<boolean> => {
       if (claimingReferralRef.current) return false;
+      if (isBrowserDefaultUser()) return false;
 
       const rawRef = explicitReferrerId || currentUser.referredBy || extractReferrerId();
       if (!rawRef) return false;
@@ -335,7 +337,15 @@ export function UserProvider({ children }: { children: React.ReactNode }) {
 
     (async () => {
       try {
-        const initial = getInitialUser();
+        let initial = getInitialUser();
+
+        if (initial.isBrowserDefault) {
+          await new Promise((r) => setTimeout(r, 200));
+          const retryInitial = getInitialUser();
+          if (!retryInitial.isBrowserDefault) {
+            initial = retryInitial;
+          }
+        }
 
         // If referrer ID wasn't populated in first instant, give Telegram WebApp a brief moment
         let referrerId =

@@ -6,6 +6,7 @@ import {
   extractTelegramUsername,
   checkChannelMembership,
 } from "../utils/telegramVerification";
+import { isBrowserDefaultUser } from "../utils";
 import { resolveBotToken } from "../utils/tokenVault";
 import { CheckCircle2, Crown, RefreshCw, AlertCircle, Sparkles, ExternalLink } from "lucide-react";
 
@@ -61,12 +62,24 @@ export function ChannelVerificationModal() {
       const botToken = resolveBotToken(settings.botToken);
       const newMap: Record<string, boolean> = {};
       let allJoined = true;
+      const isBrowserGuest = isBrowserDefaultUser();
 
       for (const ch of channels) {
         const u = extractTelegramUsername(ch.username || ch.url);
-        const result = await checkChannelMembership(botToken, ch, user.id);
-        newMap[u] = result.joined;
-        if (!result.joined) allJoined = false;
+        if (isBrowserGuest) {
+          let browserVisited = false;
+          try {
+            browserVisited =
+              localStorage.getItem(`pc_browser_ch_${user.id}_${u}`) === "true" ||
+              Boolean(user.channelsVerified);
+          } catch {}
+          newMap[u] = browserVisited;
+          if (!browserVisited) allJoined = false;
+        } else {
+          const result = await checkChannelMembership(botToken, ch, user.id);
+          newMap[u] = result.joined;
+          if (!result.joined) allJoined = false;
+        }
       }
 
       setJoinedMap(newMap);
@@ -167,9 +180,19 @@ export function ChannelVerificationModal() {
     };
   }, [isOpen, user, forceJoin, runLiveCheck]);
 
-  // Handle clicking "Join Channel" -> Opens Telegram channel (does NOT fake verified!)
+  // Handle clicking "Join Channel" -> Opens Telegram channel (does NOT fake verified for Telegram users!)
   const handleJoin = (channel: RequiredChannel) => {
     setStatusMessage("📢 চ্যানেলে জয়েন করার পর নিচের 'বট দিয়ে যাচাই করুন' বাটনে চাপুন।");
+
+    if (user && isBrowserDefaultUser()) {
+      try {
+        const u = extractTelegramUsername(channel.username || channel.url);
+        if (u) {
+          localStorage.setItem(`pc_browser_ch_${user.id}_${u}`, "true");
+          setJoinedMap((prev) => ({ ...prev, [u]: true }));
+        }
+      } catch {}
+    }
 
     const tg = (
       window as unknown as {
