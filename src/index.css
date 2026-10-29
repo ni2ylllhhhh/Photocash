@@ -1,0 +1,91 @@
+@import "tailwindcss";
+
+@layer base {
+  html, body, #root {
+    height: 100%;
+    width: 100%;
+  }
+
+  body {
+    background-color: #f1f2f4;
+    color: #111827;
+    font-family: Inter, "Hind Siliguri", system-ui, sans-serif;
+    -webkit-tap-highlight-color: transparent;
+  }
+}
+
+.bg-canvas {
+  background-color: #f1f2f4;
+}
+
+.border-canvas {
+  border-color: #f1f2f4;
+}
+
+.border-line {
+  border-color: #e8eaed;
+}
+
+.divide-line > :not([hidden]) ~ :not([hidden]) {
+  border-color: #e8eaed;
+}
+
+.text-ink {
+  color: #111827;
+}
+
+.border-ink {
+  border-color: #111827;
+}
+
+.text-muted {
+  color: #6b7280;
+}
+
+.border-muted {
+  border-color: #6b7280;
+}
+
+.text-brand-pink {
+  color: #f2295b;
+}
+
+.border-brand-pink {
+  border-color: #f2295b;
+}
+
+.bg-brand-pink {
+  background-color: #f2295b;
+}
+
+.text-brand-orange {
+  color: #f7841f;
+}
+
+.border-brand-orange {
+  border-color: #f7841f;
+}
+
+.bg-brand-orange {
+  background-color: #f7841f;
+}
+
+.brand-grad {
+  background-image: linear-gradient(90deg, #f2295b, #f7841f);
+}
+
+.brand-text {
+  background-image: linear-gradient(90deg, #f2295b, #f7841f);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}

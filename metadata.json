@@ -1,0 +1,6 @@
+{
+  "name": "PhotoCash Telegram Mini App",
+  "description": "PhotoCash Telegram Mini App - upload photos, earn USDT rewards, referral bonuses, and cash out to Binance.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
