@@ -158,16 +158,17 @@ export function ReferPage() {
           </div>
 
           {activeTab === "overview" ? (
-            <div className="py-3 text-center">
-              <span className="mx-auto flex h-14 w-14 items-center justify-center rounded-full bg-brand-orange text-[13px] font-bold text-white">
-                YOU
-              </span>
-              <p className="mt-2 text-[12px] text-muted">
-                {referrals.length} friend{referrals.length === 1 ? "" : "s"} joined with your link
-              </p>
-              <p className="mt-1 text-[12px] font-bold text-ink">
-                Total direct bonus: {formatUSDT(totalEarned, 2)} USDT
-              </p>
+            <div className="py-2 text-center">
+              <div className="overflow-hidden rounded-xl border border-gray-100 bg-white shadow-xs">
+                <img
+                  src="/assets/refer-commission-guide.jpg"
+                  onError={(e) => {
+                    (e.currentTarget as HTMLImageElement).src = "https://i.ibb.co/Wv7nk8qs/1793270116319.jpg";
+                  }}
+                  alt="Referral Commission Structure"
+                  className="w-full h-auto object-contain mx-auto"
+                />
+              </div>
             </div>
           ) : referrals.length === 0 ? (
             <p className="py-5 text-center text-[12px] text-muted">No referrals yet.</p>
