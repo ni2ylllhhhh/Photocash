@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
-import { ref, push, set, runTransaction } from "firebase/database";
+import { ref, push, set, runTransaction, serverTimestamp } from "firebase/database";
 import { contentDb, userDb } from "../firebase";
 import { User } from "../types";
 import { useUser } from "../context/UserContext";
@@ -80,7 +80,7 @@ export function CreatePage() {
           authorName: user.name,
           authorPhoto: user.photo,
           imageUrl: uploadedUrl,
-          createdAt: Date.now(),
+          createdAt: serverTimestamp(),
         });
         setSuccessMessage("Story published!");
       } else {
@@ -96,7 +96,7 @@ export function CreatePage() {
           authorPhoto: user.photo,
           caption: caption.trim(),
           imageUrl: uploadedUrl,
-          createdAt: now,
+          createdAt: serverTimestamp(),
         };
 
         let creditedReward = 0;

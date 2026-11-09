@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo } from "react";
-import { ref, onValue, update, remove, runTransaction } from "firebase/database";
+import { ref, onValue, update, remove, runTransaction, get } from "firebase/database";
 import { contentDb, userDb } from "../firebase";
 import { Settings, User, Post, Withdrawal, defaultSettings } from "../types";
 import { useSettings } from "../context/SettingsContext";
@@ -1129,9 +1129,25 @@ function UsersTab() {
                 </ActionPill>
                 <ActionPill
                   danger
-                  onClick={() => {
-                    if (window.confirm(`Delete ${u.name}?`)) {
-                      remove(ref(userDb, `users/${u.id}`));
+                  onClick={async () => {
+                    if (window.confirm(`Delete ${u.name}? All their posts will also be deleted from the feed.`)) {
+                      await remove(ref(userDb, `users/${u.id}`));
+                      try {
+                        const snap = await get(ref(contentDb, "posts"));
+                        if (snap.exists()) {
+                          const allPosts = snap.val();
+                          const deletes: Promise<any>[] = [];
+                          Object.entries(allPosts).forEach(([pId, p]: [string, any]) => {
+                            if (p?.authorId === u.id) {
+                              deletes.push(remove(ref(contentDb, `posts/${pId}`)));
+                            }
+                          });
+                          await Promise.all(deletes);
+                        }
+                        await remove(ref(contentDb, `user_posts/${u.id}`));
+                      } catch (err) {
+                        console.error("Failed to delete user posts:", err);
+                      }
                     }
                   }}
                 >
@@ -1158,46 +1174,114 @@ function UsersTab() {
 
 function PostsTab() {
   const [posts, setPosts] = useState<Post[]>([]);
+  const [search, setSearch] = useState("");
+  const [visibleLimit, setVisibleLimit] = useState(50);
 
   useEffect(() => {
     const pRef = ref(contentDb, "posts");
     const unsubscribe = onValue(pRef, (snap) => {
       const data = snap.val() || {};
       const list: Post[] = Object.values(data);
-      list.sort((a, b) => b.createdAt - a.createdAt);
+      const now = Date.now();
+      list.sort((a, b) => {
+        const timeA = Math.min(Number(a.createdAt) || 0, now);
+        const timeB = Math.min(Number(b.createdAt) || 0, now);
+        return timeB - timeA;
+      });
       setPosts(list);
     });
     return () => unsubscribe();
   }, []);
 
+  const filtered = useMemo(() => {
+    if (!search.trim()) return posts;
+    const q = search.toLowerCase();
+    return posts.filter(
+      (p) =>
+        (p.authorName || "").toLowerCase().includes(q) ||
+        (p.authorUsername || "").toLowerCase().includes(q) ||
+        (p.caption || "").toLowerCase().includes(q) ||
+        (p.id || "").toLowerCase().includes(q) ||
+        (p.authorId || "").toLowerCase().includes(q)
+    );
+  }, [posts, search]);
+
+  const handleDeletePost = async (p: Post) => {
+    if (window.confirm(`Delete post by "${p.authorName}"?`)) {
+      await remove(ref(contentDb, `posts/${p.id}`));
+      if (p.authorId) {
+        await remove(ref(contentDb, `user_posts/${p.authorId}/${p.id}`)).catch(() => {});
+      }
+    }
+  };
+
   return (
-    <ul className="space-y-2 pb-6">
-      <p className="text-[11px] text-white/40">{posts.length} posts</p>
-      {posts.map((p) => (
-        <li key={p.id} className="flex items-center gap-2 rounded-xl bg-white/5 p-2">
-          <img
-            src={p.imageUrl}
-            alt=""
-            className="h-14 w-14 rounded-lg object-cover"
+    <div className="space-y-3 pb-8">
+      <div className="flex items-center gap-2">
+        <div className="relative flex-1">
+          <Search size={14} className="absolute left-3 top-3 text-white/40" />
+          <input
+            type="text"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Search by author, username, caption, or ID..."
+            className="w-full rounded-xl bg-white/5 py-2 pl-9 pr-3 text-[12px] text-white placeholder-white/40 outline-none ring-1 ring-white/10 focus:ring-brand-orange"
           />
-          <div className="min-w-0 flex-1">
-            <p className="truncate text-[12px] font-bold">{p.authorName}</p>
-            <p className="truncate text-[11px] text-white/50">{p.caption || " "}</p>
-            <p className="text-[10px] text-white/30">
-              {formatTimeAgo(p.createdAt)} • {Object.keys(p.likes || {}).length} likes
-            </p>
-          </div>
-          <button
-            type="button"
-            aria-label="Delete post"
-            onClick={() => remove(ref(contentDb, `posts/${p.id}`))}
-            className="rounded-lg bg-red-500/20 p-2 text-red-400"
-          >
-            <Trash size={14} />
-          </button>
-        </li>
-      ))}
-    </ul>
+        </div>
+      </div>
+
+      <div className="flex items-center justify-between text-[11px] text-white/50">
+        <p>Total {filtered.length} posts {search ? `(filtered from ${posts.length})` : ""}</p>
+        <p>Showing 1 to {Math.min(visibleLimit, filtered.length)}</p>
+      </div>
+
+      <ul className="space-y-2">
+        {filtered.slice(0, visibleLimit).map((p) => {
+          const isFuture = Number(p.createdAt) > Date.now();
+          return (
+            <li key={p.id} className="flex items-center gap-2 rounded-xl bg-white/5 p-2">
+              <img
+                src={p.imageUrl}
+                alt=""
+                className="h-14 w-14 shrink-0 rounded-lg object-cover"
+              />
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-1.5">
+                  <p className="truncate text-[12px] font-bold text-white">{p.authorName}</p>
+                  {isFuture && (
+                    <span className="shrink-0 rounded bg-red-500/20 px-1.5 py-0.5 text-[9px] font-bold text-red-300">
+                      ⚠️ Future Clock
+                    </span>
+                  )}
+                </div>
+                <p className="truncate text-[11px] text-white/50">{p.caption || "(No caption)"}</p>
+                <p className="text-[10px] text-white/30">
+                  {formatTimeAgo(p.createdAt)} • {Object.keys(p.likes || {}).length} likes • ID: {p.id}
+                </p>
+              </div>
+              <button
+                type="button"
+                aria-label="Delete post"
+                onClick={() => handleDeletePost(p)}
+                className="rounded-lg bg-red-500/20 p-2 text-red-400 hover:bg-red-500/30"
+              >
+                <Trash size={14} />
+              </button>
+            </li>
+          );
+        })}
+      </ul>
+
+      {visibleLimit < filtered.length && (
+        <button
+          type="button"
+          onClick={() => setVisibleLimit((prev) => prev + 50)}
+          className="w-full rounded-xl bg-white/10 py-2.5 text-[12px] font-bold text-white hover:bg-white/15"
+        >
+          আরো পোস্ট দেখুন ({filtered.length - visibleLimit} টি বাকি)
+        </button>
+      )}
+    </div>
   );
 }
 

@@ -33,14 +33,15 @@ export function HomePage() {
   const { settings } = useSettings();
   const [posts, setPosts] = useState<Post[]>(() => {
     try {
-      const cached = sessionStorage.getItem("pc_cached_posts");
+      sessionStorage.removeItem("pc_cached_posts"); // clear old stuck cache
+      const cached = sessionStorage.getItem("pc_cached_posts_v2");
       if (cached) return JSON.parse(cached);
     } catch {}
     return [];
   });
   const [loading, setLoading] = useState(() => {
     try {
-      const cached = sessionStorage.getItem("pc_cached_posts");
+      const cached = sessionStorage.getItem("pc_cached_posts_v2");
       return !cached || JSON.parse(cached).length === 0;
     } catch {
       return true;
@@ -61,6 +62,7 @@ export function HomePage() {
     );
     const unsubscribe = onValue(postsQuery, (snapshot) => {
       const data = snapshot.val() || {};
+      const now = Date.now();
       const list: Post[] = Object.entries(data).map(([id, val]: [string, any]) => ({
         id,
         authorId: val.authorId || "",
@@ -77,11 +79,18 @@ export function HomePage() {
         starsCount: val.starsCount ?? (typeof val.stars === "number" ? val.stars : 0),
         comments: val.comments || {},
       }));
-      list.sort((a, b) => b.createdAt - a.createdAt);
+
+      // Sort with strict future-timestamp clamp so no manipulated post can stick to the top
+      list.sort((a, b) => {
+        const timeA = Math.min(Number(a.createdAt) || 0, now);
+        const timeB = Math.min(Number(b.createdAt) || 0, now);
+        return timeB - timeA;
+      });
+
       setPosts(list);
       setLoading(false);
       try {
-        sessionStorage.setItem("pc_cached_posts", JSON.stringify(list.slice(0, 6)));
+        sessionStorage.setItem("pc_cached_posts_v2", JSON.stringify(list.slice(0, 6)));
       } catch {}
 
       // Preload top visible images for instant, zero-delay rendering

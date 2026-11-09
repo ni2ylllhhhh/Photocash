@@ -67,7 +67,12 @@ export function UserProfilePage() {
         starsCount: val.starsCount ?? (typeof val.stars === "number" ? val.stars : 0),
         comments: val.comments || {},
       }));
-      list.sort((a, b) => b.createdAt - a.createdAt);
+      const now = Date.now();
+      list.sort((a, b) => {
+        const timeA = Math.min(Number(a.createdAt) || 0, now);
+        const timeB = Math.min(Number(b.createdAt) || 0, now);
+        return timeB - timeA;
+      });
       setUserSpecificPosts(list);
     });
 
@@ -90,7 +95,12 @@ export function UserProfilePage() {
         starsCount: val.starsCount ?? (typeof val.stars === "number" ? val.stars : 0),
         comments: val.comments || {},
       }));
-      list.sort((a, b) => b.createdAt - a.createdAt);
+      const now = Date.now();
+      list.sort((a, b) => {
+        const timeA = Math.min(Number(a.createdAt) || 0, now);
+        const timeB = Math.min(Number(b.createdAt) || 0, now);
+        return timeB - timeA;
+      });
       setAllPosts(list);
     });
 

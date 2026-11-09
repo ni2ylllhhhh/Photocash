@@ -359,7 +359,11 @@ export function formatCompactNumber(n: number): string {
 }
 
 export function formatTimeAgo(ts: number): string {
-  const diffSec = Math.floor((Date.now() - ts) / 1000);
+  if (!ts || isNaN(ts)) return "just now";
+  const now = Date.now();
+  // Safe calculation: if timestamp is accidentally in the future, clamp it to current time
+  const safeTs = Math.min(ts, now);
+  const diffSec = Math.max(0, Math.floor((now - safeTs) / 1000));
   if (diffSec < 60) return "just now";
   const diffMin = Math.floor(diffSec / 60);
   if (diffMin < 60) return `${diffMin}m ago`;
