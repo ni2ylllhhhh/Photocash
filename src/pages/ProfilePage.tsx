@@ -20,6 +20,7 @@ import {
   useEngagementTick,
 } from "../utils/postEngagement";
 import {
+  ArrowLeft,
   Ellipsis,
   Pencil,
   DollarSign,
@@ -156,6 +157,19 @@ export function ProfilePage() {
   return (
     <LayoutShell>
       <div className="relative h-24 bg-gradient-to-r from-amber-50 via-white to-pink-50">
+        <div className="absolute left-3 top-3 flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => (window.history.length > 1 ? navigate(-1) : navigate("/"))}
+            aria-label="Back"
+            className="flex h-8 w-8 items-center justify-center rounded-full border border-white/70 bg-white/75 text-ink shadow-xs active:scale-95"
+          >
+            <ArrowLeft size={16} />
+          </button>
+          <span className="text-[16px] font-extrabold tracking-tight text-ink">
+            Profile
+          </span>
+        </div>
         <button
           type="button"
           onClick={() => navigate("/wallet")}

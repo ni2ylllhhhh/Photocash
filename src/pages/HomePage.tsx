@@ -50,8 +50,6 @@ export function HomePage() {
   const [postLimit, setPostLimit] = useState(15);
   const [currentTab, setCurrentTab] = useState("For you");
   const [commentPost, setCommentPost] = useState<Post | null>(null);
-  const [searchOpen, setSearchOpen] = useState(false);
-  const [searchQuery, setSearchQuery] = useState("");
 
   useEffect(() => {
     // Fetch latest 15 posts quickly using primary key index
@@ -128,24 +126,15 @@ export function HomePage() {
         (a, b) => getPostLikesCount(b) - getPostLikesCount(a)
       );
     }
-    if (searchQuery.trim()) {
-      const q = searchQuery.toLowerCase();
-      result = result.filter(
-        (p) =>
-          (p.caption ?? "").toLowerCase().includes(q) ||
-          (p.authorName ?? "").toLowerCase().includes(q) ||
-          (p.authorUsername ?? "").toLowerCase().includes(q)
-      );
-    }
     return result;
-  }, [posts, currentTab, user?.following, searchQuery]);
+  }, [posts, currentTab, user?.following]);
 
   const activeCommentPost =
     commentPost && posts.find((p) => p.id === commentPost.id) || null;
 
   return (
     <LayoutShell>
-      <Header onSearch={() => setSearchOpen((prev) => !prev)} />
+      <Header onSearch={() => navigate("/search")} />
 
       {Boolean(settings.forceChannelJoin) && !user?.channelsVerified && (
         <div
@@ -177,18 +166,6 @@ export function HomePage() {
           >
             OK
           </button>
-        </div>
-      )}
-
-      {searchOpen && (
-        <div className="border-b border-line bg-white px-3 py-2">
-          <input
-            autoFocus
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder="Search people or posts"
-            className="w-full rounded-full bg-canvas px-3 py-1.5 text-[13px] outline-none"
-          />
         </div>
       )}
 

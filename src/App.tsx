@@ -12,6 +12,7 @@ import { CashOutPage } from "./pages/CashOutPage";
 import { PaymentsPage } from "./pages/PaymentsPage";
 import { ProfilePage } from "./pages/ProfilePage";
 import { UserProfilePage } from "./pages/UserProfilePage";
+import { SearchPage } from "./pages/SearchPage";
 import { AdminPanelPage } from "./pages/AdminPanelPage";
 import { APP_LOGO_URL } from "./types";
 import { startBotKeepAliveService } from "./utils/botKeepAlive";
@@ -77,6 +78,7 @@ export default function App() {
                       <Route path="/cashout" element={<CashOutPage />} />
                       <Route path="/payments" element={<PaymentsPage />} />
                       <Route path="/profile" element={<ProfilePage />} />
+                      <Route path="/search" element={<SearchPage />} />
                       <Route path="/u/:id" element={<UserProfilePage />} />
                       <Route path="*" element={<Navigate to="/" replace />} />
                     </Routes>

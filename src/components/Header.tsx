@@ -3,7 +3,7 @@ import { Plus, Search, Send } from "lucide-react";
 import { useSettings } from "../context/SettingsContext";
 import { openExternalLink } from "../utils";
 
-export function Header({ onSearch }: { onSearch: () => void }) {
+export function Header({ onSearch }: { onSearch?: () => void }) {
   const navigate = useNavigate();
   const { settings } = useSettings();
 
@@ -44,7 +44,7 @@ export function Header({ onSearch }: { onSearch: () => void }) {
         </button>
         <button
           type="button"
-          onClick={onSearch}
+          onClick={() => (onSearch ? onSearch() : navigate("/search"))}
           aria-label="Search"
           className="flex h-7 w-7 items-center justify-center rounded-full bg-canvas text-ink active:scale-95"
         >
