@@ -10,6 +10,7 @@ import { PostCard } from "../components/PostCard";
 import { CommentModal } from "../components/CommentModal";
 import { formatCompactNumber, generateAvatar } from "../utils";
 import { getProfileFollowersCount, useEngagementTick } from "../utils/postEngagement";
+import { compareNewestFirst } from "../utils/sortByNewest";
 import {
   ArrowLeft,
   Search,
@@ -172,11 +173,7 @@ export function SearchPage() {
         }));
 
         const nowMs = Date.now();
-        postList.sort((a, b) => {
-          const tA = Math.min(Number(a.createdAt) || 0, nowMs);
-          const tB = Math.min(Number(b.createdAt) || 0, nowMs);
-          return tB - tA;
-        });
+        postList.sort((a, b) => compareNewestFirst(a, b, nowMs));
         setRecentPosts(postList);
 
         for (const p of postList) {
@@ -431,7 +428,7 @@ export function SearchPage() {
                 setQueryText(e.target.value);
                 setVisibleCount(30);
               }}
-              placeholder="Search name, @username or ID..."
+              placeholder="Search by name or ID..."
               className="min-w-0 flex-1 bg-transparent text-[14px] text-ink placeholder-slate-400 outline-none"
             />
             {queryText && (
@@ -510,14 +507,14 @@ export function SearchPage() {
                         Searching all users...
                       </p>
                       <p className="text-[11.5px] text-muted">
-                        Looking up "{queryText}" across name, username &amp; ID
+                        Looking up "{queryText}" across name &amp; ID
                       </p>
                     </div>
                   ) : (
                     <>
                       <p className="text-[14px] font-bold text-ink">No user found</p>
                       <p className="mt-1 text-[12px] text-muted">
-                        Try searching by exact Telegram ID, @username, or full name.
+                        Try searching by exact ID or full name.
                       </p>
                     </>
                   )}
@@ -814,7 +811,7 @@ function FacebookUserRow({
           <VerifiedBadge className="h-[14px] w-[14px] shrink-0" />
         </p>
         <p className="truncate text-[11.5px] font-medium text-muted">
-          {target.username ? `@${target.username} • ` : ""}ID: {target.id}
+          ID: {target.id}
         </p>
         <p className="mt-0.5 text-[11px] text-slate-500">
           {formatCompactNumber(followers)} followers

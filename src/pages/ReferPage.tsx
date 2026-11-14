@@ -1,4 +1,5 @@
 import { useState, useEffect } from "react";
+import { useNavigate } from "react-router-dom";
 import { ref, onValue } from "firebase/database";
 import { userDb } from "../firebase";
 import { useUser } from "../context/UserContext";
@@ -7,7 +8,7 @@ import { LayoutShell } from "../components/Navigation";
 import { VerifiedBadge } from "../components/VerifiedBadge";
 import { formatUSDT, formatTimeAgo, openExternalLink } from "../utils";
 import { REFER_BANNER_URL } from "../types";
-import { Check, Copy, Send, CheckCircle2 } from "lucide-react";
+import { ArrowLeft, Check, Copy, Send, CheckCircle2 } from "lucide-react";
 
 interface ReferralItem {
   id: string;
@@ -18,6 +19,7 @@ interface ReferralItem {
 }
 
 export function ReferPage() {
+  const navigate = useNavigate();
   const { user } = useUser();
   const { settings } = useSettings();
   const [referrals, setReferrals] = useState<ReferralItem[]>([]);
@@ -70,18 +72,29 @@ export function ReferPage() {
         </div>
       )}
 
-      {/* Seamless Hero Banner - Perfectly integrated into the website header */}
-      <div className="relative w-full bg-white overflow-hidden pt-2">
-        <img
-          src={REFER_BANNER_URL}
-          alt="Invite your friend"
-          className="w-full h-auto object-contain block select-none"
-        />
-        {/* Soft bottom edge gradient to seamlessly melt into the content */}
-        <div className="absolute inset-x-0 bottom-0 h-8 bg-gradient-to-t from-white via-white/70 to-transparent pointer-events-none" />
-      </div>
+      <header className="flex items-center gap-2 px-3 pt-3 pb-2">
+        <button
+          type="button"
+          onClick={() => (window.history.length > 1 ? navigate(-1) : navigate("/"))}
+          aria-label="Back"
+          className="p-1 text-ink active:scale-95"
+        >
+          <ArrowLeft size={20} />
+        </button>
+        <h1 className="text-[17px] font-extrabold tracking-tight text-ink">
+          Refer
+        </h1>
+      </header>
 
-      <div className="px-3 -mt-1 space-y-2 relative z-10">
+      <div className="px-3 space-y-2.5">
+        <div className="overflow-hidden rounded-2xl border border-[#f4c89e]/60 bg-white px-2 pt-2 pb-2.5 shadow-[0_4px_16px_rgba(217,140,70,0.08)]">
+          <img
+            src={REFER_BANNER_URL}
+            alt="Invite your friend"
+            className="mx-auto block h-auto w-full object-contain select-none"
+          />
+        </div>
+
         {/* 4 Stat Cards: L1 TOTAL, L2 TOTAL, BONUS, EARNED */}
         <section className="grid grid-cols-4 gap-1.5">
           <StatCard
@@ -109,15 +122,12 @@ export function ReferPage() {
         <section className="rounded-2xl bg-white p-3 shadow-sm">
           <div className="mb-2 border-b border-line pb-1.5 flex items-center justify-between">
             <span className="text-[12px] font-bold tracking-wide text-blue-600">
-              YOUR TELEGRAM REFERRAL LINK
-            </span>
-            <span className="rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] font-bold text-emerald-600">
-              ⚡ Direct Launch
+              REFERRAL LINK
             </span>
           </div>
 
           <div className="flex items-center gap-2">
-            <p className="min-w-0 flex-1 truncate rounded-lg border border-line px-2.5 py-2 font-mono text-[11px] text-muted">
+            <p className="min-w-0 flex-1 truncate rounded-lg border border-line px-2.5 py-2 font-mono text-[11px] font-semibold text-green-600">
               {referralLink}
             </p>
             <button

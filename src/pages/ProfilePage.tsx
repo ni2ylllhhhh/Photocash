@@ -19,6 +19,7 @@ import {
   getProfileFollowersCount,
   useEngagementTick,
 } from "../utils/postEngagement";
+import { compareNewestFirst, safeCacheList } from "../utils/sortByNewest";
 import {
   ArrowLeft,
   Ellipsis,
@@ -45,28 +46,68 @@ export function ProfilePage() {
   const [avatarUploading, setAvatarUploading] = useState(false);
   const [commentPost, setCommentPost] = useState<Post | null>(null);
 
+  const [postLimit, setPostLimit] = useState(12);
+  const [needsFallback, setNeedsFallback] = useState(false);
+
   const [userSpecificPosts, setUserSpecificPosts] = useState<Post[]>(() => {
     try {
-      const cached = sessionStorage.getItem(`pc_cached_user_posts_${user?.id}`);
-      if (cached) return JSON.parse(cached);
+      sessionStorage.removeItem("pc_cached_posts");
+      if (user?.id) {
+        const cachedUser = sessionStorage.getItem(`pc_user_posts_v2_${user.id}`);
+        if (cachedUser) {
+          const parsed = JSON.parse(cachedUser);
+          if (Array.isArray(parsed)) {
+            return [...parsed].sort((a, b) => compareNewestFirst(a, b));
+          }
+        }
+        const cachedFeed = sessionStorage.getItem("pc_cached_posts_v2");
+        if (cachedFeed) {
+          const parsed = JSON.parse(cachedFeed);
+          if (Array.isArray(parsed)) {
+            return parsed
+              .filter((p: Post) => p.authorId === user.id)
+              .sort((a: Post, b: Post) => compareNewestFirst(a, b));
+          }
+        }
+      }
     } catch {}
     return [];
   });
 
-  const [allPosts, setAllPosts] = useState<Post[]>(() => {
+  const [postsLoading, setPostsLoading] = useState<boolean>(() => {
     try {
-      const cached = sessionStorage.getItem("pc_cached_posts");
-      if (cached) return JSON.parse(cached);
+      if (user?.id && sessionStorage.getItem(`pc_user_posts_v2_${user.id}`)) {
+        return false;
+      }
     } catch {}
-    return [];
+    return true;
   });
+
+  const [fallbackPosts, setFallbackPosts] = useState<Post[]>([]);
 
   useEffect(() => {
     if (!user?.id) return;
-    // Listen directly to user_posts for instantaneous sub-second loading of all user photos
-    const userPostsRef = ref(contentDb, `user_posts/${user.id}`);
-    const unsubscribeUserPosts = onValue(userPostsRef, (snapshot) => {
+    // Re-hydrate instantly if user.id becomes available after mount
+    try {
+      const cachedUser = sessionStorage.getItem(`pc_user_posts_v2_${user.id}`);
+      if (cachedUser) {
+        const parsed = JSON.parse(cachedUser);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          setUserSpecificPosts([...parsed].sort((a, b) => compareNewestFirst(a, b)));
+          setPostsLoading(false);
+        }
+      }
+    } catch {}
+
+    // Fetch only the latest batch from user_posts for sub-second loading
+    const userPostsQuery = query(
+      ref(contentDb, `user_posts/${user.id}`),
+      orderByKey(),
+      limitToLast(postLimit)
+    );
+    const unsubscribeUserPosts = onValue(userPostsQuery, (snapshot) => {
       const data = snapshot.val() || {};
+      const nowMs = Date.now();
       const list: Post[] = Object.entries(data).map(([id, val]: [string, any]) => ({
         id,
         authorId: val.authorId || user.id,
@@ -81,56 +122,71 @@ export function ProfilePage() {
         starsCount: val.starsCount ?? (typeof val.stars === "number" ? val.stars : 0),
         comments: val.comments || {},
       }));
-      const now = Date.now();
-      list.sort((a, b) => {
-        const timeA = Math.min(Number(a.createdAt) || 0, now);
-        const timeB = Math.min(Number(b.createdAt) || 0, now);
-        return timeB - timeA;
-      });
+      list.sort((a, b) => compareNewestFirst(a, b, nowMs));
       setUserSpecificPosts(list);
-      try {
-        sessionStorage.setItem(`pc_cached_user_posts_${user.id}`, JSON.stringify(list));
-      } catch {}
+      if (list.length > 0) {
+        setPostsLoading(false);
+        setNeedsFallback(false);
+        safeCacheList(`pc_user_posts_v2_${user.id}`, list, 12);
+      } else {
+        setNeedsFallback(true);
+      }
     });
 
-    const pRef = query(ref(contentDb, "posts"), orderByKey(), limitToLast(30));
+    return () => unsubscribeUserPosts();
+  }, [user?.id, postLimit]);
+
+  // Only query global posts if user_posts/${user.id} is empty (legacy accounts)
+  useEffect(() => {
+    if (!needsFallback || !user?.id) return;
+    const pRef = query(ref(contentDb, "posts"), orderByKey(), limitToLast(25));
     const unsubscribeFeed = onValue(pRef, (snapshot) => {
       const data = snapshot.val() || {};
-      const list: Post[] = Object.entries(data).map(([id, val]: [string, any]) => ({
-        id,
-        authorId: val.authorId || "",
-        authorName: val.authorName || "Unknown user",
-        authorUsername: val.authorUsername || "user",
-        authorPhoto:
-          val.authorPhoto ||
-          "https://ui-avatars.com/api/?name=U&background=f2295b&color=fff&size=128&bold=true",
-        caption: val.caption ?? "",
-        imageUrl: val.imageUrl || "",
-        createdAt: val.createdAt || 0,
-        likes: val.likes || {},
-        stars: val.stars || 0,
-        starsCount: val.starsCount ?? (typeof val.stars === "number" ? val.stars : 0),
-        comments: val.comments || {},
-      }));
-      const now = Date.now();
-      list.sort((a, b) => {
-        const timeA = Math.min(Number(a.createdAt) || 0, now);
-        const timeB = Math.min(Number(b.createdAt) || 0, now);
-        return timeB - timeA;
-      });
-      setAllPosts(list);
+      const nowMs = Date.now();
+      const list: Post[] = Object.entries(data)
+        .filter(([, val]: [string, any]) => val?.authorId === user.id)
+        .map(([id, val]: [string, any]) => ({
+          id,
+          authorId: val.authorId || "",
+          authorName: val.authorName || "Unknown user",
+          authorUsername: val.authorUsername || "user",
+          authorPhoto:
+            val.authorPhoto ||
+            "https://ui-avatars.com/api/?name=U&background=f2295b&color=fff&size=128&bold=true",
+          caption: val.caption ?? "",
+          imageUrl: val.imageUrl || "",
+          createdAt: val.createdAt || 0,
+          likes: val.likes || {},
+          stars: val.stars || 0,
+          starsCount: val.starsCount ?? (typeof val.stars === "number" ? val.stars : 0),
+          comments: val.comments || {},
+        }));
+      list.sort((a, b) => compareNewestFirst(a, b, nowMs));
+      setFallbackPosts(list);
+      setPostsLoading(false);
     });
+    return () => unsubscribeFeed();
+  }, [needsFallback, user?.id]);
 
-    return () => {
-      unsubscribeUserPosts();
-      unsubscribeFeed();
+  // Seamlessly load older posts as user scrolls down
+  useEffect(() => {
+    const handleScroll = () => {
+      if (
+        userSpecificPosts.length >= postLimit &&
+        window.innerHeight + window.scrollY >=
+          document.documentElement.scrollHeight - 600
+      ) {
+        setPostLimit((prev) => (prev < 120 ? prev + 12 : prev));
+      }
     };
-  }, [user?.id]);
+    window.addEventListener("scroll", handleScroll, { passive: true });
+    return () => window.removeEventListener("scroll", handleScroll);
+  }, [userSpecificPosts.length, postLimit]);
 
   const myPosts = useMemo(() => {
     if (userSpecificPosts.length > 0) return userSpecificPosts;
-    return allPosts.filter((p) => p.authorId === user?.id);
-  }, [userSpecificPosts, allPosts, user?.id]);
+    return fallbackPosts;
+  }, [userSpecificPosts, fallbackPosts]);
 
   const followersCount = getProfileFollowersCount(user, now);
   const followingCount = user?.following ? Object.keys(user.following).length : 0;
@@ -271,7 +327,19 @@ export function ProfilePage() {
         </div>
       </div>
 
-      {myPosts.length === 0 ? (
+      {postsLoading && myPosts.length === 0 ? (
+        <div className="mt-1.5 space-y-1.5">
+          {[0, 1].map((idx) => (
+            <div key={idx} className="bg-white p-3">
+              <div className="mb-2 flex items-center gap-2">
+                <div className="h-9 w-9 animate-pulse rounded-full bg-canvas" />
+                <div className="h-3 w-28 animate-pulse rounded bg-canvas" />
+              </div>
+              <div className="h-44 w-full animate-pulse rounded bg-canvas" />
+            </div>
+          ))}
+        </div>
+      ) : myPosts.length === 0 ? (
         <p className="px-3 py-10 text-center text-[12px] text-muted">
           {tab === "reels" ? "No reels yet." : "No posts yet — upload a photo to start earning."}
         </p>
@@ -370,7 +438,7 @@ export function ProfilePage() {
       )}
 
       <CommentModal
-        post={(commentPost && allPosts.find((p) => p.id === commentPost.id)) || commentPost}
+        post={(commentPost && myPosts.find((p) => p.id === commentPost.id)) || commentPost}
         onClose={() => setCommentPost(null)}
       />
     </LayoutShell>

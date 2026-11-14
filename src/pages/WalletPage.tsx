@@ -105,7 +105,7 @@ export function WalletPage() {
         </span>
       </header>
 
-      <section className="rounded-2xl bg-white px-4 py-4 text-center">
+      <section className="rounded-2xl border border-[#f4c89e]/80 bg-gradient-to-r from-[#fff3e8] via-[#fff6f3] to-[#ffedf2] px-4 py-4 text-center shadow-[0_4px_18px_rgba(217,140,70,0.1)]">
         <p className="text-[13px] font-semibold text-muted">Total Earnings</p>
         <p className="mt-0.5 text-[34px] font-extrabold leading-tight text-ink">
           {formatUSDT(balance)}
@@ -118,14 +118,14 @@ export function WalletPage() {
           <button
             type="button"
             onClick={() => navigate("/cashout")}
-            className="brand-grad flex items-center justify-center gap-1.5 rounded-full py-2 text-[13px] font-bold text-white active:scale-[0.98]"
+            className="brand-grad flex items-center justify-center gap-1.5 rounded-full py-2 text-[13px] font-bold text-white shadow-sm active:scale-[0.98]"
           >
             <Wallet size={15} /> Cash Out
           </button>
           <button
             type="button"
             onClick={() => navigate("/payments")}
-            className="flex items-center justify-center gap-1.5 rounded-full bg-canvas py-2 text-[13px] font-bold text-ink active:scale-[0.98]"
+            className="flex items-center justify-center gap-1.5 rounded-full border border-[#f4c89e]/60 bg-white/90 py-2 text-[13px] font-bold text-ink shadow-xs active:scale-[0.98]"
           >
             <History size={15} /> Payments
           </button>
@@ -191,18 +191,6 @@ export function WalletPage() {
           </p>
         </div>
       </section>
-
-      <div className="mt-2 rounded-2xl border border-brand-pink/30 bg-brand-pink/5 p-3">
-        {isFirstWithdraw ? (
-          <p className="text-[12px] font-bold text-brand-pink">
-            🚨 প্রথমবার {firstMinRefs} টি রেফার ও {STARS_PER_WITHDRAW} টি স্টার না করলে withdraw হবে না
-          </p>
-        ) : (
-          <p className="text-[12px] font-bold text-brand-pink">
-            🚨 পরবর্তী প্রতিবার withdraw করতে মাত্র {SUBSEQUENT_WITHDRAW_REFERRALS} টি রেফার ও {STARS_PER_WITHDRAW} টি করে স্টার প্রয়োজন
-          </p>
-        )}
-      </div>
 
       <h2 className="mb-1.5 mt-4 text-[16px] font-extrabold text-ink">Support</h2>
       <section className="rounded-2xl bg-white p-3">

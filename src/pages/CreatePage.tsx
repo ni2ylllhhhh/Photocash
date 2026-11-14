@@ -7,6 +7,7 @@ import { useUser } from "../context/UserContext";
 import { useSettings } from "../context/SettingsContext";
 import { LayoutShell } from "../components/Navigation";
 import { formatUSDT, uploadImageToImgbb } from "../utils";
+import { safeCacheList } from "../utils/sortByNewest";
 import { ArrowLeft, X, Image as ImageIcon, LoaderCircle } from "lucide-react";
 
 export function CreatePage() {
@@ -74,6 +75,7 @@ export function CreatePage() {
 
       if (isStory) {
         const storyRef = push(ref(contentDb, "stories"));
+        const now = Date.now();
         await set(storyRef, {
           id: storyRef.key,
           authorId: user.id,
@@ -82,6 +84,22 @@ export function CreatePage() {
           imageUrl: uploadedUrl,
           createdAt: serverTimestamp(),
         });
+        try {
+          const raw = sessionStorage.getItem("pc_cached_stories_v3");
+          const prev = raw ? JSON.parse(raw) : [];
+          const next = [
+            {
+              id: storyRef.key,
+              authorId: user.id,
+              authorName: user.name,
+              authorPhoto: user.photo,
+              imageUrl: uploadedUrl,
+              createdAt: now,
+            },
+            ...(Array.isArray(prev) ? prev : []),
+          ];
+          safeCacheList("pc_cached_stories_v3", next, 50);
+        } catch {}
         setSuccessMessage("Story published!");
       } else {
         const now = Date.now();
@@ -137,6 +155,33 @@ export function CreatePage() {
             return updated;
           }),
         ]);
+
+        // Optimistically prepend to session caches so Home & Profile immediately show newest post at #1
+        try {
+          const optimisticPost = {
+            ...postPayload,
+            id: postRef.key || "",
+            createdAt: now,
+            likes: {},
+            stars: 0,
+            starsCount: 0,
+            comments: {},
+          };
+          const rawFeed = sessionStorage.getItem("pc_cached_posts_v2");
+          const prevFeed = rawFeed ? JSON.parse(rawFeed) : [];
+          safeCacheList(
+            "pc_cached_posts_v2",
+            [optimisticPost, ...(Array.isArray(prevFeed) ? prevFeed : [])],
+            8
+          );
+          const rawUserPosts = sessionStorage.getItem(`pc_user_posts_v2_${user.id}`);
+          const prevUserPosts = rawUserPosts ? JSON.parse(rawUserPosts) : [];
+          safeCacheList(
+            `pc_user_posts_v2_${user.id}`,
+            [optimisticPost, ...(Array.isArray(prevUserPosts) ? prevUserPosts : [])],
+            12
+          );
+        } catch {}
 
         if (creditedReward > 0) {
           // Record history & commissions asynchronously in background without blocking navigation
@@ -222,7 +267,7 @@ export function CreatePage() {
           </div>
         </div>
 
-        {!isStory && (
+        {!isStory ? (
           <textarea
             value={caption}
             onChange={(e) => setCaption(e.target.value)}
@@ -230,6 +275,10 @@ export function CreatePage() {
             placeholder="Write a caption..."
             className="mt-3 w-full resize-none rounded-xl bg-white p-3 text-[13px] outline-none"
           />
+        ) : (
+          <p className="mt-2.5 rounded-xl bg-amber-50 px-3 py-2 text-[11.5px] font-medium text-amber-800">
+            ⏳ Your story will be shown in the story bar for 24 hours.
+          </p>
         )}
 
         {previewUrl ? (

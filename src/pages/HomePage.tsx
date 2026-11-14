@@ -12,6 +12,7 @@ import { PostCard } from "../components/PostCard";
 import { AdBanner } from "../components/AdBanner";
 import { CommentModal } from "../components/CommentModal";
 import { getPostLikesCount } from "../utils/postEngagement";
+import { compareNewestFirst, safeCacheList } from "../utils/sortByNewest";
 import {
   Image as ImageIcon,
   Sparkles,
@@ -35,7 +36,12 @@ export function HomePage() {
     try {
       sessionStorage.removeItem("pc_cached_posts"); // clear old stuck cache
       const cached = sessionStorage.getItem("pc_cached_posts_v2");
-      if (cached) return JSON.parse(cached);
+      if (cached) {
+        const parsed = JSON.parse(cached);
+        if (Array.isArray(parsed)) {
+          return [...parsed].sort((a, b) => compareNewestFirst(a, b));
+        }
+      }
     } catch {}
     return [];
   });
@@ -78,18 +84,11 @@ export function HomePage() {
         comments: val.comments || {},
       }));
 
-      // Sort with strict future-timestamp clamp so no manipulated post can stick to the top
-      list.sort((a, b) => {
-        const timeA = Math.min(Number(a.createdAt) || 0, now);
-        const timeB = Math.min(Number(b.createdAt) || 0, now);
-        return timeB - timeA;
-      });
+      list.sort((a, b) => compareNewestFirst(a, b, now));
 
       setPosts(list);
       setLoading(false);
-      try {
-        sessionStorage.setItem("pc_cached_posts_v2", JSON.stringify(list.slice(0, 6)));
-      } catch {}
+      safeCacheList("pc_cached_posts_v2", list, 8);
 
       // Preload top visible images for instant, zero-delay rendering
       list.slice(0, 3).forEach((p) => {

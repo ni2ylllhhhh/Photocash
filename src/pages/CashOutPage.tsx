@@ -378,7 +378,7 @@ export function CashOutPage() {
         </section>
       ) : (
         <>
-          <section className="rounded-2xl bg-white p-3">
+          <section className="rounded-2xl border border-[#f4c89e]/80 bg-gradient-to-r from-[#fff3e8] via-[#fff6f3] to-[#ffedf2] p-3 shadow-[0_4px_18px_rgba(217,140,70,0.1)]">
             <p className="mb-2 text-[13px] font-semibold text-muted">Select Amount</p>
             <div className="grid grid-cols-3 gap-2">
               {AMOUNTS.map((amt) => (
@@ -386,10 +386,10 @@ export function CashOutPage() {
                   key={amt}
                   type="button"
                   onClick={() => setSelectedAmount(amt)}
-                  className={`rounded-xl border py-3 text-[15px] font-bold transition ${
+                  className={`rounded-xl border py-3 text-[15px] font-bold transition active:scale-[0.98] ${
                     selectedAmount === amt
-                      ? "border-brand-orange bg-brand-orange/10 text-ink"
-                      : "border-transparent bg-canvas text-ink"
+                      ? "brand-grad border-transparent text-white shadow-[0_3px_12px_rgba(247,132,31,0.35)]"
+                      : "border-[#f4c89e]/45 bg-white/85 text-ink hover:bg-white"
                   }`}
                 >
                   $ {amt}

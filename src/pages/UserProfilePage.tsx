@@ -14,6 +14,7 @@ import {
   getProfileFollowersCount,
   useEngagementTick,
 } from "../utils/postEngagement";
+import { compareNewestFirst, safeCacheList } from "../utils/sortByNewest";
 import {
   ArrowLeft,
   UserCheck,
@@ -29,30 +30,138 @@ export function UserProfilePage() {
   const { user, toggleFollow, isFollowing } = useUser();
   const now = useEngagementTick(15000);
 
-  const [profile, setProfile] = useState<User | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [profile, setProfile] = useState<User | null>(() => {
+    if (!id) return null;
+    try {
+      const cached = sessionStorage.getItem(`pc_user_profile_v1_${id}`);
+      if (cached) return JSON.parse(cached);
+    } catch {}
+    return null;
+  });
+  const [loading, setLoading] = useState<boolean>(() => {
+    if (!id) return true;
+    try {
+      return !sessionStorage.getItem(`pc_user_profile_v1_${id}`);
+    } catch {
+      return true;
+    }
+  });
   const [tab, setTab] = useState<"feed" | "photos" | "reels">("feed");
   const [commentPost, setCommentPost] = useState<Post | null>(null);
-  const [allPosts, setAllPosts] = useState<Post[]>([]);
+  const [postLimit, setPostLimit] = useState(12);
+  const [needsFallback, setNeedsFallback] = useState(false);
+
+  const [userSpecificPosts, setUserSpecificPosts] = useState<Post[]>(() => {
+    if (!id) return [];
+    try {
+      const cachedUser = sessionStorage.getItem(`pc_user_posts_v2_${id}`);
+      if (cachedUser) {
+        const parsed = JSON.parse(cachedUser);
+        if (Array.isArray(parsed)) {
+          return [...parsed].sort((a, b) => compareNewestFirst(a, b));
+        }
+      }
+      const cachedFeed = sessionStorage.getItem("pc_cached_posts_v2");
+      if (cachedFeed) {
+        const parsed = JSON.parse(cachedFeed);
+        if (Array.isArray(parsed)) {
+          return parsed
+            .filter((p: Post) => p.authorId === id)
+            .sort((a: Post, b: Post) => compareNewestFirst(a, b));
+        }
+      }
+    } catch {}
+    return [];
+  });
+  const [postsLoading, setPostsLoading] = useState<boolean>(() => {
+    if (!id) return true;
+    try {
+      return !sessionStorage.getItem(`pc_user_posts_v2_${id}`);
+    } catch {
+      return true;
+    }
+  });
+  const [fallbackPosts, setFallbackPosts] = useState<Post[]>([]);
 
   useEffect(() => {
     if (!id) return;
-    setLoading(true);
+    setPostLimit(12);
+    setNeedsFallback(false);
+    setFallbackPosts([]);
+
+    let hasCachedProfile = false;
+    try {
+      const cached = sessionStorage.getItem(`pc_user_profile_v1_${id}`);
+      if (cached) {
+        setProfile(JSON.parse(cached));
+        setLoading(false);
+        hasCachedProfile = true;
+      } else {
+        // Instant lightweight preview from feed/stories/search caches if available
+        const feedRaw = sessionStorage.getItem("pc_cached_posts_v2");
+        if (feedRaw) {
+          const match = (JSON.parse(feedRaw) as Post[]).find((p) => p.authorId === id);
+          if (match) {
+            setProfile({
+              id,
+              name: match.authorName,
+              username: match.authorUsername || "user",
+              photo: match.authorPhoto,
+              bio: "",
+              balance: 0,
+              totalEarned: 0,
+              todayEarned: 0,
+              todayKey: "",
+              postCount: 0,
+              referrals: 0,
+              referredBy: null,
+              binanceId: "",
+              createdAt: 0,
+            });
+            setLoading(false);
+          }
+        }
+      }
+    } catch {}
+    if (!hasCachedProfile) setLoading(true);
+
     const uRef = ref(userDb, `users/${id}`);
     const unsubscribe = onValue(uRef, (snap) => {
-      setProfile(snap.val());
+      const val = snap.val() as User | null;
+      setProfile(val);
       setLoading(false);
+      if (val) {
+        try {
+          // Strip heavy history array before caching profile metadata
+          const { history: _omitHistory, ...lightProfile } = val as User & { history?: unknown };
+          sessionStorage.setItem(`pc_user_profile_v1_${id}`, JSON.stringify(lightProfile));
+        } catch {}
+      }
     });
     return () => unsubscribe();
   }, [id]);
 
-  const [userSpecificPosts, setUserSpecificPosts] = useState<Post[]>([]);
-
   useEffect(() => {
     if (!id) return;
-    const userPostsRef = ref(contentDb, `user_posts/${id}`);
-    const unsubscribeUserPosts = onValue(userPostsRef, (snapshot) => {
+    try {
+      const cachedUser = sessionStorage.getItem(`pc_user_posts_v2_${id}`);
+      if (cachedUser) {
+        const parsed = JSON.parse(cachedUser);
+        if (Array.isArray(parsed)) {
+          setUserSpecificPosts([...parsed].sort((a, b) => compareNewestFirst(a, b)));
+          setPostsLoading(false);
+        }
+      }
+    } catch {}
+
+    const userPostsQuery = query(
+      ref(contentDb, `user_posts/${id}`),
+      orderByKey(),
+      limitToLast(postLimit)
+    );
+    const unsubscribeUserPosts = onValue(userPostsQuery, (snapshot) => {
       const data = snapshot.val() || {};
+      const nowMs = Date.now();
       const list: Post[] = Object.entries(data).map(([pid, val]: [string, any]) => ({
         id: pid,
         authorId: val.authorId || id,
@@ -67,53 +176,70 @@ export function UserProfilePage() {
         starsCount: val.starsCount ?? (typeof val.stars === "number" ? val.stars : 0),
         comments: val.comments || {},
       }));
-      const now = Date.now();
-      list.sort((a, b) => {
-        const timeA = Math.min(Number(a.createdAt) || 0, now);
-        const timeB = Math.min(Number(b.createdAt) || 0, now);
-        return timeB - timeA;
-      });
+      list.sort((a, b) => compareNewestFirst(a, b, nowMs));
       setUserSpecificPosts(list);
+      if (list.length > 0) {
+        setPostsLoading(false);
+        setNeedsFallback(false);
+        safeCacheList(`pc_user_posts_v2_${id}`, list, 12);
+      } else {
+        setNeedsFallback(true);
+      }
     });
 
-    const pRef = query(ref(contentDb, "posts"), orderByKey(), limitToLast(30));
+    return () => unsubscribeUserPosts();
+  }, [id, postLimit]);
+
+  // Conditional fallback only when user_posts/${id} is empty
+  useEffect(() => {
+    if (!needsFallback || !id) return;
+    const pRef = query(ref(contentDb, "posts"), orderByKey(), limitToLast(25));
     const unsubscribeFeed = onValue(pRef, (snapshot) => {
       const data = snapshot.val() || {};
-      const list: Post[] = Object.entries(data).map(([pid, val]: [string, any]) => ({
-        id: pid,
-        authorId: val.authorId || "",
-        authorName: val.authorName || "Unknown user",
-        authorUsername: val.authorUsername || "user",
-        authorPhoto:
-          val.authorPhoto ||
-          "https://ui-avatars.com/api/?name=U&background=f2295b&color=fff&size=128&bold=true",
-        caption: val.caption ?? "",
-        imageUrl: val.imageUrl || "",
-        createdAt: val.createdAt || 0,
-        likes: val.likes || {},
-        stars: val.stars || 0,
-        starsCount: val.starsCount ?? (typeof val.stars === "number" ? val.stars : 0),
-        comments: val.comments || {},
-      }));
-      const now = Date.now();
-      list.sort((a, b) => {
-        const timeA = Math.min(Number(a.createdAt) || 0, now);
-        const timeB = Math.min(Number(b.createdAt) || 0, now);
-        return timeB - timeA;
-      });
-      setAllPosts(list);
+      const nowMs = Date.now();
+      const list: Post[] = Object.entries(data)
+        .filter(([, val]: [string, any]) => val?.authorId === id)
+        .map(([pid, val]: [string, any]) => ({
+          id: pid,
+          authorId: val.authorId || "",
+          authorName: val.authorName || "Unknown user",
+          authorUsername: val.authorUsername || "user",
+          authorPhoto:
+            val.authorPhoto ||
+            "https://ui-avatars.com/api/?name=U&background=f2295b&color=fff&size=128&bold=true",
+          caption: val.caption ?? "",
+          imageUrl: val.imageUrl || "",
+          createdAt: val.createdAt || 0,
+          likes: val.likes || {},
+          stars: val.stars || 0,
+          starsCount: val.starsCount ?? (typeof val.stars === "number" ? val.stars : 0),
+          comments: val.comments || {},
+        }));
+      list.sort((a, b) => compareNewestFirst(a, b, nowMs));
+      setFallbackPosts(list);
+      setPostsLoading(false);
     });
+    return () => unsubscribeFeed();
+  }, [needsFallback, id]);
 
-    return () => {
-      unsubscribeUserPosts();
-      unsubscribeFeed();
+  useEffect(() => {
+    const handleScroll = () => {
+      if (
+        userSpecificPosts.length >= postLimit &&
+        window.innerHeight + window.scrollY >=
+          document.documentElement.scrollHeight - 600
+      ) {
+        setPostLimit((prev) => (prev < 120 ? prev + 12 : prev));
+      }
     };
-  }, [id]);
+    window.addEventListener("scroll", handleScroll, { passive: true });
+    return () => window.removeEventListener("scroll", handleScroll);
+  }, [userSpecificPosts.length, postLimit]);
 
   const userPosts = useMemo(() => {
     if (userSpecificPosts.length > 0) return userSpecificPosts;
-    return allPosts.filter((p) => p.authorId === id);
-  }, [userSpecificPosts, allPosts, id]);
+    return fallbackPosts;
+  }, [userSpecificPosts, fallbackPosts]);
 
   if (!loading && !profile) {
     return (
@@ -206,7 +332,19 @@ export function UserProfilePage() {
         </div>
       </div>
 
-      {userPosts.length === 0 ? (
+      {postsLoading && userPosts.length === 0 ? (
+        <div className="mt-1.5 space-y-1.5">
+          {[0, 1].map((idx) => (
+            <div key={idx} className="bg-white p-3">
+              <div className="mb-2 flex items-center gap-2">
+                <div className="h-9 w-9 animate-pulse rounded-full bg-canvas" />
+                <div className="h-3 w-28 animate-pulse rounded bg-canvas" />
+              </div>
+              <div className="h-44 w-full animate-pulse rounded bg-canvas" />
+            </div>
+          ))}
+        </div>
+      ) : userPosts.length === 0 ? (
         <p className="py-10 text-center text-[12px] text-muted">
           {tab === "reels" ? "No reels yet." : "No posts yet."}
         </p>
@@ -250,7 +388,7 @@ export function UserProfilePage() {
       )}
 
       <CommentModal
-        post={(commentPost && allPosts.find((p) => p.id === commentPost.id)) || commentPost}
+        post={(commentPost && userPosts.find((p) => p.id === commentPost.id)) || commentPost}
         onClose={() => setCommentPost(null)}
       />
     </LayoutShell>
