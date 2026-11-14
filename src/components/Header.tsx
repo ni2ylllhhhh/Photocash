@@ -1,6 +1,5 @@
 import { useNavigate } from "react-router-dom";
 import { Plus, Search, Send } from "lucide-react";
-import { APP_LOGO_URL } from "../types";
 import { useSettings } from "../context/SettingsContext";
 import { openExternalLink } from "../utils";
 
@@ -22,16 +21,17 @@ export function Header({ onSearch }: { onSearch: () => void }) {
   };
 
   return (
-    <header className="sticky top-0 z-30 flex items-center justify-between border-b border-line bg-white px-3 py-2">
-      <div className="flex items-center gap-2">
+    <header className="sticky top-0 z-30 flex items-center justify-between border-b border-line bg-white px-3 py-1.5">
+      <div className="flex items-center">
         <img
-          src={APP_LOGO_URL}
-          alt="PhotoCash Logo"
-          className="h-7 w-7 rounded-full object-cover shadow-sm ring-1 ring-brand-orange/40"
+          src="/assets/photocash-header-logo.png"
+          onError={(e) => {
+            (e.currentTarget as HTMLImageElement).src =
+              "https://i.ibb.co/rK4GDfLW/file-00000000ffac82119b6a8714423cb0bd.png";
+          }}
+          alt="PhotoCash"
+          className="h-9 w-auto max-w-[150px] object-contain select-none"
         />
-        <h1 className="text-[17px] font-extrabold tracking-tight text-ink">
-          PhotoCash
-        </h1>
       </div>
       <div className="flex items-center gap-1.5">
         <button
