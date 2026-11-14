@@ -30,7 +30,7 @@ export function Header({ onSearch }: { onSearch: () => void }) {
               "https://i.ibb.co/rK4GDfLW/file-00000000ffac82119b6a8714423cb0bd.png";
           }}
           alt="PhotoCash"
-          className="h-9 w-auto max-w-[150px] object-contain select-none"
+          className="h-14 w-auto max-w-[210px] -my-1 object-contain select-none"
         />
       </div>
       <div className="flex items-center gap-1.5">
