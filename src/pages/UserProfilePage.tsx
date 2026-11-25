@@ -136,6 +136,11 @@ export function UserProfilePage() {
           const { history: _omitHistory, ...lightProfile } = val as User & { history?: unknown };
           sessionStorage.setItem(`pc_user_profile_v1_${id}`, JSON.stringify(lightProfile));
         } catch {}
+      } else {
+        try {
+          sessionStorage.removeItem(`pc_user_profile_v1_${id}`);
+          sessionStorage.removeItem(`pc_user_posts_v2_${id}`);
+        } catch {}
       }
     });
     return () => unsubscribe();
@@ -183,6 +188,9 @@ export function UserProfilePage() {
         setNeedsFallback(false);
         safeCacheList(`pc_user_posts_v2_${id}`, list, 12);
       } else {
+        try {
+          sessionStorage.removeItem(`pc_user_posts_v2_${id}`);
+        } catch {}
         setNeedsFallback(true);
       }
     });

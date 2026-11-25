@@ -45,6 +45,14 @@ interface SearchableUser {
 let cachedFullDirectory: SearchableUser[] | null = null;
 let cachedFullDirectoryPromise: Promise<SearchableUser[]> | null = null;
 
+export function invalidateSearchCache(): void {
+  cachedFullDirectory = null;
+  cachedFullDirectoryPromise = null;
+  try {
+    sessionStorage.removeItem("pc_search_seed_users_v1");
+  } catch {}
+}
+
 function mapRawUser(id: string, val: any): SearchableUser | null {
   if (!val || typeof val !== "object") return null;
   if (val.banned) return null;

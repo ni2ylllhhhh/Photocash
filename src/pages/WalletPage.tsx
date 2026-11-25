@@ -21,7 +21,6 @@ import {
 } from "lucide-react";
 
 const SUBSEQUENT_WITHDRAW_REFERRALS = 5;
-const STARS_PER_WITHDRAW = 10;
 
 export function WalletPage() {
   const navigate = useNavigate();
@@ -83,7 +82,13 @@ export function WalletPage() {
     ? firstMinRefs
     : firstMinRefs + validWithdrawCount * SUBSEQUENT_WITHDRAW_REFERRALS;
   const neededReferrals = Math.max(0, requiredTotalReferrals - referrals);
-  const requiredTotalStars = (validWithdrawCount + 1) * STARS_PER_WITHDRAW;
+  const starsPerWithdraw = Math.max(
+    0,
+    settings.minStars !== undefined && settings.minStars !== null
+      ? Number(settings.minStars)
+      : 20
+  );
+  const requiredTotalStars = (validWithdrawCount + 1) * starsPerWithdraw;
   const neededStars = Math.max(0, requiredTotalStars - totalStars);
 
   return (

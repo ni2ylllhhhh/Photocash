@@ -18,6 +18,7 @@ export interface Settings {
   l3Percent: number;
   minWithdraw: number;
   minReferrals: number;
+  minStars?: number;
   botLink: string;
   botUsername: string;
   appShortName: string;
@@ -67,6 +68,7 @@ export const defaultSettings: Settings = {
   l3Percent: 5,
   minWithdraw: 5,
   minReferrals: 15,
+  minStars: 20,
   botLink: "https://t.me/PhotoCash12_bot",
   botUsername: "PhotoCash12_bot",
   appShortName: "app",

@@ -19,10 +19,12 @@ export function CreatePage() {
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const preUploadPromiseRef = useRef<Promise<string> | null>(null);
+  const selectionTokenRef = useRef(0);
 
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string>("");
   const [caption, setCaption] = useState("");
+  const [preUploading, setPreUploading] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [errorMessage, setErrorMessage] = useState("");
   const [successMessage, setSuccessMessage] = useState("");
@@ -37,14 +39,16 @@ export function CreatePage() {
   useEffect(() => {
     const timer = window.setTimeout(() => {
       fileInputRef.current?.click();
-    }, 250);
+    }, 80);
     return () => window.clearTimeout(timer);
   }, []);
 
   const handleSelectFile = (file?: File) => {
     if (!file) return;
+    const token = ++selectionTokenRef.current;
     setErrorMessage("");
     setSelectedFile(file);
+    setPreUploading(true);
     if (previewUrl) {
       try {
         URL.revokeObjectURL(previewUrl);
@@ -53,12 +57,16 @@ export function CreatePage() {
     const objUrl = URL.createObjectURL(file);
     setPreviewUrl(objUrl);
 
-    // Immediately start pre-uploading in background the moment photo is selected
-    // so when the user clicks "Post", the URL is already ready!
-    preUploadPromiseRef.current = uploadImageToImgbb(
+    // Immediately start compressing/uploading in background the moment photo is selected
+    const task = uploadImageToImgbb(
       file,
       settings.imgbbKeys || settings.imgbbKey
-    );
+    ).finally(() => {
+      if (selectionTokenRef.current === token) {
+        setPreUploading(false);
+      }
+    });
+    preUploadPromiseRef.current = task;
   };
 
   const handlePublish = async () => {
@@ -119,11 +127,10 @@ export function CreatePage() {
 
         let creditedReward = 0;
 
-        // 2. Run post creation, user_posts indexing, and atomic user balance/postCount update in parallel
-        await Promise.all([
-          set(postRef, postPayload),
-          set(ref(contentDb, `user_posts/${user.id}/${postRef.key}`), postPayload),
-          runTransaction(ref(userDb, `users/${user.id}`), (current: User | null) => {
+        // 2. Write post & user_posts immediately in parallel; run heavy user reward transaction in background
+        const rewardTask = runTransaction(
+          ref(userDb, `users/${user.id}`),
+          (current: User | null) => {
             if (!current) return current;
             const serverLastReward = Number(current.lastPostRewardAt) || 0;
             const serverEligible = !serverLastReward || now - serverLastReward >= intervalMs;
@@ -153,8 +160,28 @@ export function CreatePage() {
             }
 
             return updated;
-          }),
+          }
+        )
+          .then(() => {
+            if (creditedReward > 0) {
+              const historyRef = push(ref(userDb, `users/${user.id}/history`));
+              set(historyRef, {
+                type: "post",
+                amount: creditedReward,
+                note: "Post reward",
+                createdAt: now,
+              }).catch(() => {});
+
+              distributeTierCommissions(creditedReward, "Post reward").catch(() => {});
+            }
+          })
+          .catch(() => {});
+
+        await Promise.all([
+          set(postRef, postPayload),
+          set(ref(contentDb, `user_posts/${user.id}/${postRef.key}`), postPayload),
         ]);
+        void rewardTask;
 
         // Optimistically prepend to session caches so Home & Profile immediately show newest post at #1
         try {
@@ -183,27 +210,14 @@ export function CreatePage() {
           );
         } catch {}
 
-        if (creditedReward > 0) {
-          // Record history & commissions asynchronously in background without blocking navigation
-          const historyRef = push(ref(userDb, `users/${user.id}/history`));
-          set(historyRef, {
-            type: "post",
-            amount: creditedReward,
-            note: "Post reward",
-            createdAt: now,
-          }).catch(() => {});
-
-          distributeTierCommissions(creditedReward, "Post reward").catch(() => {});
-
-          setSuccessMessage(
-            `Posted! +${formatUSDT(creditedReward, 3)} USDT added to balance! 🎉`
-          );
-        } else {
-          setSuccessMessage(`Posted! (Next reward available in ${remainingMinutes}m)`);
-        }
+        setSuccessMessage(
+          isEligibleForReward && Number(settings.postReward || 0) > 0
+            ? `Posted! +${formatUSDT(settings.postReward, 3)} USDT! 🎉`
+            : "Posted!"
+        );
       }
 
-      window.setTimeout(() => navigate("/"), 500);
+      navigate("/");
     } catch (err: any) {
       setErrorMessage(err instanceof Error ? err.message : "Something went wrong");
       setUploading(false);
@@ -288,11 +302,19 @@ export function CreatePage() {
               alt="Selected"
               className="max-h-80 w-full object-contain"
             />
+            {preUploading && !uploading && (
+              <span className="absolute left-2 top-2 flex items-center gap-1 rounded-full bg-black/60 px-2.5 py-1 text-[10px] font-semibold text-white">
+                <LoaderCircle size={11} className="animate-spin" />
+                Optimizing...
+              </span>
+            )}
             <button
               type="button"
               onClick={() => {
+                selectionTokenRef.current++;
                 setSelectedFile(null);
                 setPreviewUrl("");
+                setPreUploading(false);
                 preUploadPromiseRef.current = null;
               }}
               aria-label="Remove photo"

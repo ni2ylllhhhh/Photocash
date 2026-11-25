@@ -387,11 +387,64 @@ export function openExternalLink(url: string) {
   window.open(url, "_blank");
 }
 
+function drawScaledToDataUrl(
+  source: CanvasImageSource,
+  srcWidth: number,
+  srcHeight: number,
+  maxDim: number,
+  quality: number
+): string {
+  let width = srcWidth || maxDim;
+  let height = srcHeight || maxDim;
+  if (width > maxDim || height > maxDim) {
+    if (width > height) {
+      height = Math.max(1, Math.round((height * maxDim) / width));
+      width = maxDim;
+    } else {
+      width = Math.max(1, Math.round((width * maxDim) / height));
+      height = maxDim;
+    }
+  }
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return "";
+  ctx.drawImage(source, 0, 0, width, height);
+  let dataUrl = canvas.toDataURL("image/jpeg", quality);
+  // Instant sub-3ms quality step-down from existing canvas if photo is dense (> ~38KB binary)
+  if (dataUrl.length > 52000 && quality > 0.52) {
+    dataUrl = canvas.toDataURL("image/jpeg", 0.52);
+  }
+  return dataUrl;
+}
+
 export async function compressImageToDataUrl(
   file: File,
-  maxDim = 1080,
-  quality = 0.78
+  maxDim = 680,
+  quality = 0.68
 ): Promise<string> {
+  // Fast off-thread decode when supported
+  if (typeof createImageBitmap === "function") {
+    try {
+      const bitmap = await createImageBitmap(file);
+      try {
+        const result = drawScaledToDataUrl(
+          bitmap,
+          bitmap.width,
+          bitmap.height,
+          maxDim,
+          quality
+        );
+        if (result) return result;
+      } finally {
+        bitmap.close();
+      }
+    } catch {
+      // Fall through to standard Image loader
+    }
+  }
+
   return new Promise((resolve, reject) => {
     const objectUrl = URL.createObjectURL(file);
     const img = new Image();
@@ -401,23 +454,9 @@ export async function compressImageToDataUrl(
     };
     img.onload = () => {
       URL.revokeObjectURL(objectUrl);
-      let { width, height } = img;
-      if (width > maxDim || height > maxDim) {
-        if (width > height) {
-          height = Math.round((height * maxDim) / width);
-          width = maxDim;
-        } else {
-          width = Math.round((width * maxDim) / height);
-          height = maxDim;
-        }
-      }
-      const canvas = document.createElement("canvas");
-      canvas.width = width;
-      canvas.height = height;
-      const ctx = canvas.getContext("2d");
-      if (!ctx) return resolve("");
-      ctx.drawImage(img, 0, 0, width, height);
-      resolve(canvas.toDataURL("image/jpeg", quality));
+      resolve(
+        drawScaledToDataUrl(img, img.naturalWidth || img.width, img.naturalHeight || img.height, maxDim, quality)
+      );
     };
     img.src = objectUrl;
   });
@@ -431,10 +470,13 @@ export const DEFAULT_IMGBB_KEYS = [
   "ba2d5677268f9b2dc7ff89bb2f5d33f8",
 ];
 
+// Remember rate-limited / blocked ImgBB keys temporarily so subsequent uploads skip them immediately
+const failedImgbbKeysUntil = new Map<string, number>();
+
 async function trySingleImgbbUpload(
   key: string,
   base64Data: string,
-  timeoutMs = 4000
+  timeoutMs = 2200
 ): Promise<string> {
   const controller = new AbortController();
   const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs);
@@ -446,11 +488,24 @@ async function trySingleImgbbUpload(
       body: form,
       signal: controller.signal,
     });
-    if (!res.ok) throw new Error("Upload HTTP error");
+    if (!res.ok) {
+      if (res.status === 400 || res.status === 403 || res.status === 429) {
+        failedImgbbKeysUntil.set(key, Date.now() + 5 * 60 * 1000);
+      }
+      throw new Error(`Upload HTTP ${res.status}`);
+    }
     const json = await res.json();
     const hostedUrl = json?.data?.display_url || json?.data?.url;
-    if (!hostedUrl) throw new Error("No URL returned");
+    if (!hostedUrl) {
+      failedImgbbKeysUntil.set(key, Date.now() + 5 * 60 * 1000);
+      throw new Error("No URL returned");
+    }
     return hostedUrl;
+  } catch (err) {
+    if (!failedImgbbKeysUntil.has(key)) {
+      failedImgbbKeysUntil.set(key, Date.now() + 60 * 1000);
+    }
+    throw err;
   } finally {
     clearTimeout(timeoutId);
   }
@@ -460,50 +515,37 @@ export async function uploadImageToImgbb(
   file: File,
   userApiKey?: string | string[]
 ): Promise<string> {
-  // 1. Ultra-fast client-side compression: 720p @ 0.70 gives sharp HD mobile photo at only ~25-30KB
-  const compressedDataUrl = await compressImageToDataUrl(file, 720, 0.70);
+  // 1. Single-pass fast client-side compression (~18-35KB crisp mobile photo)
+  const compressedDataUrl = await compressImageToDataUrl(file, 680, 0.68);
   const base64Data = compressedDataUrl.replace(/^data:image\/\w+;base64,/, "");
 
-  // 2. Gather and shuffle all 5+ API keys for even load distribution across concurrent users
+  // 2. Gather keys and skip any currently on rate-limit/error cooldown
   const extraKeys = Array.isArray(userApiKey)
     ? userApiKey
     : userApiKey
     ? [userApiKey]
     : [];
 
+  const now = Date.now();
   const allKeys = Array.from(
     new Set([...extraKeys.filter(Boolean), ...DEFAULT_IMGBB_KEYS])
-  );
-  const shuffledKeys = [...allKeys].sort(() => Math.random() - 0.5);
+  ).filter((k) => (failedImgbbKeysUntil.get(k) || 0) <= now);
 
-  // 3. Parallel Hedged Upload: Race 2 random keys simultaneously so whichever server responds fastest wins immediately!
-  const firstBatch = shuffledKeys.slice(0, 2);
+  if (allKeys.length === 0) {
+    // All CDN keys recently rate-limited: return compact DataURL immediately in 0ms
+    return compressedDataUrl;
+  }
+
+  // 3. Single fast parallel race (up to 3 keys simultaneously, 2.2s cap)
+  const candidates = [...allKeys].sort(() => Math.random() - 0.5).slice(0, 3);
   try {
     const fastUrl = await Promise.any(
-      firstBatch.map((k) => trySingleImgbbUpload(k, base64Data, 4000))
+      candidates.map((k) => trySingleImgbbUpload(k, base64Data, 2200))
     );
     if (fastUrl) return fastUrl;
   } catch {
-    // First pair failed or timed out — race remaining keys in pool
+    // Fall through immediately to already-compressed DataURL (zero re-compression)
   }
-
-  const secondBatch = shuffledKeys.slice(2);
-  if (secondBatch.length > 0) {
-    try {
-      const backupUrl = await Promise.any(
-        secondBatch.map((k) => trySingleImgbbUpload(k, base64Data, 4500))
-      );
-      if (backupUrl) return backupUrl;
-    } catch {
-      // Fall through to compact DataURL fallback
-    }
-  }
-
-  // 4. Ultimate fallback: Compact 640p DataURL (~25KB) so post creation NEVER fails even if external CDN is down
-  try {
-    const compactFallback = await compressImageToDataUrl(file, 640, 0.65);
-    if (compactFallback) return compactFallback;
-  } catch {}
 
   return compressedDataUrl;
 }

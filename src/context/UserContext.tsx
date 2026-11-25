@@ -382,14 +382,26 @@ export function UserProvider({ children }: { children: React.ReactNode }) {
         }
 
         const userRef = ref(userDb, `users/${initial.id}`);
+        let hadServerRecord = false;
 
         // Stream real-time updates immediately so UI never stalls
         onValue(userRef, (snapshot) => {
           if (snapshot.exists()) {
+            hadServerRecord = true;
             const val = snapshot.val() as User;
             setUser(val);
             try {
               localStorage.setItem("pc_cached_user", JSON.stringify(val));
+            } catch {}
+          } else if (hadServerRecord) {
+            // User was deleted from Admin Panel during active session
+            setUser(null);
+            try {
+              localStorage.removeItem("pc_cached_user");
+              sessionStorage.removeItem(`pc_user_posts_v2_${initial.id}`);
+              sessionStorage.removeItem(`pc_user_profile_v1_${initial.id}`);
+              sessionStorage.removeItem("pc_cached_posts_v2");
+              sessionStorage.removeItem("pc_cached_stories_v3");
             } catch {}
           }
           setLoading(false);

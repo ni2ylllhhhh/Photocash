@@ -129,6 +129,9 @@ export function ProfilePage() {
         setNeedsFallback(false);
         safeCacheList(`pc_user_posts_v2_${user.id}`, list, 12);
       } else {
+        try {
+          sessionStorage.removeItem(`pc_user_posts_v2_${user.id}`);
+        } catch {}
         setNeedsFallback(true);
       }
     });

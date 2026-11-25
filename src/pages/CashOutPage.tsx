@@ -13,7 +13,6 @@ import { User, Withdrawal, BKASH_LOGO_URL, NAGAD_LOGO_URL, BINANCE_LOGO_URL } fr
 
 const AMOUNTS = [5, 10, 15, 30, 60, 100];
 const SUBSEQUENT_WITHDRAW_REFERRALS = 5;
-const STARS_PER_WITHDRAW = 10;
 
 type PaymentMethod = "bkash" | "nagad" | "binance";
 
@@ -174,10 +173,16 @@ export function CashOutPage() {
           (firstMinRefs + (validWithdrawCount - 1) * SUBSEQUENT_WITHDRAW_REFERRALS)
       );
 
-  const minRequiredStars = (validWithdrawCount + 1) * STARS_PER_WITHDRAW;
+  const starsPerWithdraw = Math.max(
+    0,
+    settings.minStars !== undefined && settings.minStars !== null
+      ? Number(settings.minStars)
+      : 20
+  );
+  const minRequiredStars = (validWithdrawCount + 1) * starsPerWithdraw;
   const currentStepStars = Math.max(
     0,
-    totalStars - validWithdrawCount * STARS_PER_WITHDRAW
+    totalStars - validWithdrawCount * starsPerWithdraw
   );
 
   const insufficientBalance = balance < Math.max(selectedAmount, settings.minWithdraw || 5);
@@ -472,12 +477,12 @@ export function CashOutPage() {
               ok={!insufficientStars}
               text={
                 isFirstWithdraw
-                  ? `প্রতিবার উইথড্র করতে ${STARS_PER_WITHDRAW}টা স্টারের প্রয়োজন ( আপনার আছে ${String(
+                  ? `প্রতিবার উইথড্র করতে ${starsPerWithdraw}টা স্টারের প্রয়োজন ( আপনার আছে ${String(
                       totalStars
-                    ).padStart(2, "0")}/${STARS_PER_WITHDRAW} টা ⭐ )`
-                  : `প্রতিবার উইথড্র করতে ${STARS_PER_WITHDRAW}টা নতুন স্টারের প্রয়োজন ( নতুন স্টার ${String(
-                      Math.min(STARS_PER_WITHDRAW, currentStepStars)
-                    ).padStart(2, "0")}/${STARS_PER_WITHDRAW} টা ⭐ • মোট ${totalStars}/${minRequiredStars} টা )`
+                    ).padStart(2, "0")}/${starsPerWithdraw} টা ⭐ )`
+                  : `প্রতিবার উইথড্র করতে ${starsPerWithdraw}টা নতুন স্টারের প্রয়োজন ( নতুন স্টার ${String(
+                      Math.min(starsPerWithdraw, currentStepStars)
+                    ).padStart(2, "0")}/${starsPerWithdraw} টা ⭐ • মোট ${totalStars}/${minRequiredStars} টা )`
               }
             />
             <CheckRow

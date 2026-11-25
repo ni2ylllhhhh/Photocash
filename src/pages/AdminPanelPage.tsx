@@ -1,10 +1,22 @@
 import React, { useState, useEffect, useMemo } from "react";
-import { ref, onValue, update, remove, runTransaction, get } from "firebase/database";
-import { contentDb, userDb } from "../firebase";
-import { Settings, User, Post, Withdrawal, defaultSettings } from "../types";
+import {
+  ref,
+  onValue,
+  update,
+  remove,
+  runTransaction,
+  get,
+  query,
+  orderByKey,
+  limitToLast,
+} from "firebase/database";
+import { contentDb, userDb, contentFirebaseConfig } from "../firebase";
+import { Settings, User, Post, Story, Withdrawal, defaultSettings } from "../types";
 import { useSettings } from "../context/SettingsContext";
-import { formatUSDT, formatTimeAgo, sendTelegramBotMessage } from "../utils";
+import { formatUSDT, formatTimeAgo, sendTelegramBotMessage, generateAvatar } from "../utils";
 import { resolveBotToken, encryptBotToken } from "../utils/tokenVault";
+import { compareNewestFirst, clearDeletedContentCaches } from "../utils/sortByNewest";
+import { invalidateSearchCache } from "./SearchPage";
 import { AdminBroadcastTab } from "../components/AdminBroadcastTab";
 import {
   Lock,
@@ -26,6 +38,8 @@ import {
   Phone,
   Copy,
   Check,
+  X,
+  LoaderCircle,
 } from "lucide-react";
 
 const SESSION_KEY = "pc_panel_session";
@@ -246,6 +260,10 @@ function SettingsTab({
       l3Percent: Number(form.l3Percent) || 5,
       minWithdraw: Number(form.minWithdraw) || 5,
       minReferrals: Number(form.minReferrals) || 15,
+      minStars:
+        form.minStars !== undefined && form.minStars !== ("" as any)
+          ? Math.max(0, Number(form.minStars) || 0)
+          : 20,
       adminPassword: String(form.adminPassword || "445566"),
       announcement: form.announcement,
       botUsername: form.botUsername || "PhotoCash12_bot",
@@ -377,6 +395,13 @@ function SettingsTab({
           value={form.minReferrals}
           onChange={(v) => updateField("minReferrals", v)}
           hint="User must have at least this many referrals to cash out."
+        />
+        <FormInput
+          label="Required Stars per Withdraw (উইথড্র স্টার লিমিট)"
+          type="number"
+          value={form.minStars ?? 20}
+          onChange={(v) => updateField("minStars", v)}
+          hint="প্রতিবার উইথড্র করতে কতটা স্টার লাগবে (যেমন ১০ বা ২০ — ডিফল্ট: ২০)।"
         />
       </SectionCard>
 
@@ -890,6 +915,9 @@ function UsersTab() {
   const [search, setSearch] = useState("");
   const [sortBy, setSortBy] = useState<"newest" | "referrals" | "balance" | "banned">("newest");
   const [visibleLimit, setVisibleLimit] = useState(60);
+  const [confirmDeleteUid, setConfirmDeleteUid] = useState<string | null>(null);
+  const [deletingUid, setDeletingUid] = useState<string | null>(null);
+  const [deleteBanner, setDeleteBanner] = useState<string | null>(null);
 
   useEffect(() => {
     const uRef = ref(userDb, "users");
@@ -1007,8 +1035,80 @@ function UsersTab() {
     }
   };
 
+  const handleDeleteUser = async (u: User) => {
+    if (deletingUid) return;
+    setDeletingUid(u.id);
+    setConfirmDeleteUid(null);
+    try {
+      // 1. Collect all post IDs from indexed user_posts/${u.id}, recent global posts, and all stories
+      const [userPostsSnap, recentPostsSnap, storiesSnap] = await Promise.all([
+        get(ref(contentDb, `user_posts/${u.id}`)).catch(() => null),
+        get(query(ref(contentDb, "posts"), orderByKey(), limitToLast(500))).catch(() => null),
+        get(ref(contentDb, "stories")).catch(() => null),
+      ]);
+
+      const contentUpdates: Record<string, null> = {};
+      contentUpdates[`user_posts/${u.id}`] = null;
+
+      let deletedPostsCount = 0;
+      if (userPostsSnap && userPostsSnap.exists()) {
+        Object.keys(userPostsSnap.val() || {}).forEach((pId) => {
+          contentUpdates[`posts/${pId}`] = null;
+          deletedPostsCount++;
+        });
+      }
+      if (recentPostsSnap && recentPostsSnap.exists()) {
+        Object.entries(recentPostsSnap.val() || {}).forEach(([pId, p]: [string, any]) => {
+          if (String(p?.authorId || "") === String(u.id)) {
+            if (!(`posts/${pId}` in contentUpdates)) deletedPostsCount++;
+            contentUpdates[`posts/${pId}`] = null;
+          }
+        });
+      }
+      if (storiesSnap && storiesSnap.exists()) {
+        Object.entries(storiesSnap.val() || {}).forEach(([sId, s]: [string, any]) => {
+          if (String(s?.authorId || "") === String(u.id)) {
+            contentUpdates[`stories/${sId}`] = null;
+          }
+        });
+      }
+
+      const userRemovals: Promise<any>[] = [
+        remove(ref(userDb, `users/${u.id}`)),
+        remove(ref(userDb, `referrals/${u.id}`)).catch(() => {}),
+        remove(ref(userDb, `referred_records/${u.id}`)).catch(() => {}),
+        update(ref(contentDb), contentUpdates),
+      ];
+      if (u.referredBy) {
+        userRemovals.push(
+          remove(ref(userDb, `referrals/${u.referredBy}/${u.id}`)).catch(() => {})
+        );
+      }
+
+      await Promise.all(userRemovals);
+
+      clearDeletedContentCaches({ userId: u.id });
+      invalidateSearchCache();
+      setDeleteBanner(
+        `✅ ${u.name} (ID: ${u.id}) ও তার ${deletedPostsCount}টি পোস্ট + স্টোরি ডিলিট করা হয়েছে।`
+      );
+      window.setTimeout(() => setDeleteBanner(null), 4000);
+    } catch (err) {
+      console.error("Failed to delete user and content:", err);
+      setDeleteBanner("❌ ডিলিট করতে সমস্যা হয়েছে, আবার চেষ্টা করুন।");
+      window.setTimeout(() => setDeleteBanner(null), 4000);
+    } finally {
+      setDeletingUid(null);
+    }
+  };
+
   return (
     <>
+      {deleteBanner && (
+        <div className="mb-3 rounded-xl border border-emerald-500/30 bg-emerald-500/15 px-3 py-2 text-[11.5px] font-bold text-emerald-200">
+          {deleteBanner}
+        </div>
+      )}
       {/* Live User & Referral Counter Summary */}
       <div className="mb-3 grid grid-cols-2 gap-2 sm:grid-cols-4">
         <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/10 p-2.5 text-center">
@@ -1127,32 +1227,32 @@ function UsersTab() {
                 >
                   {u.banned ? "Unban" : "Ban"}
                 </ActionPill>
-                <ActionPill
-                  danger
-                  onClick={async () => {
-                    if (window.confirm(`Delete ${u.name}? All their posts will also be deleted from the feed.`)) {
-                      await remove(ref(userDb, `users/${u.id}`));
-                      try {
-                        const snap = await get(ref(contentDb, "posts"));
-                        if (snap.exists()) {
-                          const allPosts = snap.val();
-                          const deletes: Promise<any>[] = [];
-                          Object.entries(allPosts).forEach(([pId, p]: [string, any]) => {
-                            if (p?.authorId === u.id) {
-                              deletes.push(remove(ref(contentDb, `posts/${pId}`)));
-                            }
-                          });
-                          await Promise.all(deletes);
-                        }
-                        await remove(ref(contentDb, `user_posts/${u.id}`));
-                      } catch (err) {
-                        console.error("Failed to delete user posts:", err);
-                      }
-                    }
-                  }}
-                >
-                  Delete
-                </ActionPill>
+                {confirmDeleteUid === u.id ? (
+                  <div className="flex items-center gap-1">
+                    <button
+                      type="button"
+                      disabled={deletingUid === u.id}
+                      onClick={() => handleDeleteUser(u)}
+                      className="rounded-full bg-red-600 px-2.5 py-1 text-[10.5px] font-bold text-white hover:bg-red-700"
+                    >
+                      {deletingUid === u.id ? "Deleting..." : "Confirm Delete"}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setConfirmDeleteUid(null)}
+                      className="rounded-full bg-white/10 px-2.5 py-1 text-[10.5px] font-semibold text-white/80"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                ) : (
+                  <ActionPill
+                    danger
+                    onClick={() => setConfirmDeleteUid(u.id)}
+                  >
+                    {deletingUid === u.id ? "Deleting..." : "Delete"}
+                  </ActionPill>
+                )}
               </div>
             </li>
           );
@@ -1173,30 +1273,167 @@ function UsersTab() {
 }
 
 function PostsTab() {
+  const [subTab, setSubTab] = useState<"posts" | "stories">("posts");
   const [posts, setPosts] = useState<Post[]>([]);
-  const [search, setSearch] = useState("");
-  const [visibleLimit, setVisibleLimit] = useState(50);
+  const [postsLoading, setPostsLoading] = useState(true);
+  const [fetchLimit, setFetchLimit] = useState(80);
+  const [totalPostsCount, setTotalPostsCount] = useState<number | null>(null);
+  const [userPostsLookup, setUserPostsLookup] = useState<Post[]>([]);
+  const [lookupLoading, setLookupLoading] = useState(false);
 
+  const [stories, setStories] = useState<Story[]>([]);
+  const [storiesLoading, setStoriesLoading] = useState(true);
+  const [storyLimit, setStoryLimit] = useState(120);
+
+  const [search, setSearch] = useState("");
+  const [visibleLimit, setVisibleLimit] = useState(60);
+  const [confirmDeleteKey, setConfirmDeleteKey] = useState<string | null>(null);
+  const [deletingKey, setDeletingKey] = useState<string | null>(null);
+  const [previewImage, setPreviewImage] = useState<string | null>(null);
+  const [statusMsg, setStatusMsg] = useState<string | null>(null);
+
+  // Fetch lightweight total post count via shallow=true
   useEffect(() => {
-    const pRef = ref(contentDb, "posts");
-    const unsubscribe = onValue(pRef, (snap) => {
-      const data = snap.val() || {};
-      const list: Post[] = Object.values(data);
-      const now = Date.now();
-      list.sort((a, b) => {
-        const timeA = Math.min(Number(a.createdAt) || 0, now);
-        const timeB = Math.min(Number(b.createdAt) || 0, now);
-        return timeB - timeA;
-      });
-      setPosts(list);
-    });
-    return () => unsubscribe();
+    let active = true;
+    fetch(`${contentFirebaseConfig.databaseURL}/posts.json?shallow=true`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((keys) => {
+        if (active && keys && typeof keys === "object") {
+          setTotalPostsCount(Object.keys(keys).length);
+        }
+      })
+      .catch(() => {});
+    return () => {
+      active = false;
+    };
   }, []);
 
-  const filtered = useMemo(() => {
-    if (!search.trim()) return posts;
-    const q = search.toLowerCase();
-    return posts.filter(
+  // Load latest batch of posts using limitToLast so Admin Panel loads in < 500ms
+  useEffect(() => {
+    setPostsLoading(true);
+    const pQuery = query(
+      ref(contentDb, "posts"),
+      orderByKey(),
+      limitToLast(fetchLimit)
+    );
+    const unsubscribe = onValue(
+      pQuery,
+      (snap) => {
+        const data = snap.val() || {};
+        const now = Date.now();
+        const list: Post[] = Object.entries(data).map(([id, val]: [string, any]) => ({
+          id: val?.id || id,
+          authorId: String(val?.authorId || ""),
+          authorName: val?.authorName || "Unknown user",
+          authorUsername: val?.authorUsername || "user",
+          authorPhoto:
+            val?.authorPhoto ||
+            generateAvatar(val?.authorName || "U", String(val?.authorId || id)),
+          caption: val?.caption ?? "",
+          imageUrl: val?.imageUrl || "",
+          createdAt: Number(val?.createdAt) || 0,
+          likes: val?.likes || {},
+          stars: val?.stars || 0,
+          starsCount: val?.starsCount ?? (typeof val?.stars === "number" ? val.stars : 0),
+          comments: val?.comments || {},
+        }));
+        list.sort((a, b) => compareNewestFirst(a, b, now));
+        setPosts(list);
+        setPostsLoading(false);
+      },
+      () => setPostsLoading(false)
+    );
+    return () => unsubscribe();
+  }, [fetchLimit]);
+
+  // Load stories batch for moderation
+  useEffect(() => {
+    setStoriesLoading(true);
+    const sQuery = query(
+      ref(contentDb, "stories"),
+      orderByKey(),
+      limitToLast(storyLimit)
+    );
+    const unsubscribe = onValue(
+      sQuery,
+      (snap) => {
+        const data = snap.val() || {};
+        const now = Date.now();
+        const list: Story[] = Object.entries(data).map(([id, s]: [string, any]) => ({
+          id: s?.id || id,
+          authorId: String(s?.authorId || ""),
+          authorName: s?.authorName || "Unknown user",
+          authorPhoto:
+            s?.authorPhoto ||
+            generateAvatar(s?.authorName || "U", String(s?.authorId || id)),
+          imageUrl: s?.imageUrl || "",
+          createdAt: Number(s?.createdAt) || 0,
+        }));
+        list.sort((a, b) => compareNewestFirst(a, b, now));
+        setStories(list);
+        setStoriesLoading(false);
+      },
+      () => setStoriesLoading(false)
+    );
+    return () => unsubscribe();
+  }, [storyLimit]);
+
+  // Direct fast lookup when searching by numeric User ID (finds all posts of that user across entire DB)
+  useEffect(() => {
+    const trimmed = search.trim();
+    if (!/^\d{5,}$/.test(trimmed)) {
+      setUserPostsLookup([]);
+      return;
+    }
+    let active = true;
+    setLookupLoading(true);
+    get(ref(contentDb, `user_posts/${trimmed}`))
+      .then((snap) => {
+        if (!active) return;
+        const data = snap.val() || {};
+        const now = Date.now();
+        const list: Post[] = Object.entries(data).map(([id, val]: [string, any]) => ({
+          id: val?.id || id,
+          authorId: String(val?.authorId || trimmed),
+          authorName: val?.authorName || "Unknown user",
+          authorUsername: val?.authorUsername || "user",
+          authorPhoto:
+            val?.authorPhoto || generateAvatar(val?.authorName || "U", trimmed),
+          caption: val?.caption ?? "",
+          imageUrl: val?.imageUrl || "",
+          createdAt: Number(val?.createdAt) || 0,
+          likes: val?.likes || {},
+          stars: val?.stars || 0,
+          starsCount: val?.starsCount ?? (typeof val?.stars === "number" ? val.stars : 0),
+          comments: val?.comments || {},
+        }));
+        list.sort((a, b) => compareNewestFirst(a, b, now));
+        setUserPostsLookup(list);
+      })
+      .catch(() => {})
+      .finally(() => {
+        if (active) setLookupLoading(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [search]);
+
+  const mergedPosts = useMemo(() => {
+    if (userPostsLookup.length === 0) return posts;
+    const map = new Map<string, Post>();
+    for (const p of userPostsLookup) map.set(p.id, p);
+    for (const p of posts) {
+      if (!map.has(p.id)) map.set(p.id, p);
+    }
+    const now = Date.now();
+    return Array.from(map.values()).sort((a, b) => compareNewestFirst(a, b, now));
+  }, [posts, userPostsLookup]);
+
+  const filteredPosts = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    if (!q) return mergedPosts;
+    return mergedPosts.filter(
       (p) =>
         (p.authorName || "").toLowerCase().includes(q) ||
         (p.authorUsername || "").toLowerCase().includes(q) ||
@@ -1204,82 +1441,400 @@ function PostsTab() {
         (p.id || "").toLowerCase().includes(q) ||
         (p.authorId || "").toLowerCase().includes(q)
     );
-  }, [posts, search]);
+  }, [mergedPosts, search]);
+
+  const filteredStories = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    if (!q) return stories;
+    return stories.filter(
+      (s) =>
+        (s.authorName || "").toLowerCase().includes(q) ||
+        (s.id || "").toLowerCase().includes(q) ||
+        (s.authorId || "").toLowerCase().includes(q)
+    );
+  }, [stories, search]);
 
   const handleDeletePost = async (p: Post) => {
-    if (window.confirm(`Delete post by "${p.authorName}"?`)) {
-      await remove(ref(contentDb, `posts/${p.id}`));
+    if (deletingKey) return;
+    setDeletingKey(p.id);
+    setConfirmDeleteKey(null);
+    try {
+      const updates: Record<string, null> = {
+        [`posts/${p.id}`]: null,
+      };
       if (p.authorId) {
-        await remove(ref(contentDb, `user_posts/${p.authorId}/${p.id}`)).catch(() => {});
+        updates[`user_posts/${p.authorId}/${p.id}`] = null;
       }
+      await update(ref(contentDb), updates);
+
+      if (p.authorId) {
+        runTransaction(ref(userDb, `users/${p.authorId}/postCount`), (cur) =>
+          Math.max(0, (Number(cur) || 1) - 1)
+        ).catch(() => {});
+      }
+
+      setPosts((prev) => prev.filter((item) => item.id !== p.id));
+      setUserPostsLookup((prev) => prev.filter((item) => item.id !== p.id));
+      setTotalPostsCount((prev) => (prev !== null ? Math.max(0, prev - 1) : prev));
+      clearDeletedContentCaches({ postId: p.id });
+      if (p.authorId) {
+        try {
+          sessionStorage.removeItem(`pc_user_posts_v2_${p.authorId}`);
+        } catch {}
+      }
+      setStatusMsg(`✅ "${p.authorName}" এর পোস্ট ডিলিট হয়েছে (ইউজার প্যানেল থেকেও রিমুভ হয়েছে)।`);
+      window.setTimeout(() => setStatusMsg(null), 3500);
+    } catch (err) {
+      console.error("Failed to delete post:", err);
+      setStatusMsg("❌ পোস্ট ডিলিট করা যায়নি, আবার চেষ্টা করুন।");
+      window.setTimeout(() => setStatusMsg(null), 3500);
+    } finally {
+      setDeletingKey(null);
+    }
+  };
+
+  const handleDeleteStory = async (s: Story) => {
+    if (deletingKey) return;
+    setDeletingKey(s.id);
+    setConfirmDeleteKey(null);
+    try {
+      await remove(ref(contentDb, `stories/${s.id}`));
+      setStories((prev) => prev.filter((item) => item.id !== s.id));
+      clearDeletedContentCaches({ storyId: s.id });
+      setStatusMsg(`✅ "${s.authorName}" এর স্টোরি ডিলিট হয়েছে।`);
+      window.setTimeout(() => setStatusMsg(null), 3500);
+    } catch (err) {
+      console.error("Failed to delete story:", err);
+      setStatusMsg("❌ স্টোরি ডিলিট করা যায়নি, আবার চেষ্টা করুন।");
+      window.setTimeout(() => setStatusMsg(null), 3500);
+    } finally {
+      setDeletingKey(null);
     }
   };
 
   return (
     <div className="space-y-3 pb-8">
+      {/* Sub-tabs: Posts vs Stories */}
+      <div className="flex gap-2">
+        <button
+          type="button"
+          onClick={() => {
+            setSubTab("posts");
+            setVisibleLimit(60);
+          }}
+          className={`flex-1 rounded-xl py-2 text-[12px] font-bold transition ${
+            subTab === "posts"
+              ? "bg-white text-black shadow"
+              : "bg-white/10 text-white/70 hover:bg-white/15"
+          }`}
+        >
+          📸 Posts ({totalPostsCount ?? posts.length})
+        </button>
+        <button
+          type="button"
+          onClick={() => {
+            setSubTab("stories");
+            setVisibleLimit(60);
+          }}
+          className={`flex-1 rounded-xl py-2 text-[12px] font-bold transition ${
+            subTab === "stories"
+              ? "bg-white text-black shadow"
+              : "bg-white/10 text-white/70 hover:bg-white/15"
+          }`}
+        >
+          ⏳ Stories ({stories.length})
+        </button>
+      </div>
+
+      {statusMsg && (
+        <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/15 px-3 py-2 text-[11.5px] font-bold text-emerald-200">
+          {statusMsg}
+        </div>
+      )}
+
       <div className="flex items-center gap-2">
         <div className="relative flex-1">
           <Search size={14} className="absolute left-3 top-3 text-white/40" />
           <input
             type="text"
             value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            placeholder="Search by author, username, caption, or ID..."
-            className="w-full rounded-xl bg-white/5 py-2 pl-9 pr-3 text-[12px] text-white placeholder-white/40 outline-none ring-1 ring-white/10 focus:ring-brand-orange"
+            onChange={(e) => {
+              setSearch(e.target.value);
+              setVisibleLimit(60);
+            }}
+            placeholder="Search by author name, user ID, caption, or post ID..."
+            className="w-full rounded-xl bg-white/5 py-2 pl-9 pr-8 text-[12px] text-white placeholder-white/40 outline-none ring-1 ring-white/10 focus:ring-brand-orange"
           />
+          {search && (
+            <button
+              type="button"
+              onClick={() => setSearch("")}
+              aria-label="Clear search"
+              className="absolute right-2.5 top-2.5 text-white/40 hover:text-white"
+            >
+              <X size={14} />
+            </button>
+          )}
         </div>
       </div>
 
-      <div className="flex items-center justify-between text-[11px] text-white/50">
-        <p>Total {filtered.length} posts {search ? `(filtered from ${posts.length})` : ""}</p>
-        <p>Showing 1 to {Math.min(visibleLimit, filtered.length)}</p>
-      </div>
+      {subTab === "posts" ? (
+        <>
+          <div className="flex items-center justify-between text-[11px] text-white/50">
+            <p>
+              লোড হয়েছে {posts.length}
+              {totalPostsCount !== null ? ` / মোট ${totalPostsCount}` : ""} পোস্ট
+              {search ? ` • ম্যাচ ${filteredPosts.length}টি` : ""}
+              {lookupLoading ? " • ইউজার পোস্ট খুঁজছে..." : ""}
+            </p>
+            <p>দেখানো হচ্ছে {Math.min(visibleLimit, filteredPosts.length)}টি</p>
+          </div>
 
-      <ul className="space-y-2">
-        {filtered.slice(0, visibleLimit).map((p) => {
-          const isFuture = Number(p.createdAt) > Date.now();
-          return (
-            <li key={p.id} className="flex items-center gap-2 rounded-xl bg-white/5 p-2">
-              <img
-                src={p.imageUrl}
-                alt=""
-                className="h-14 w-14 shrink-0 rounded-lg object-cover"
-              />
-              <div className="min-w-0 flex-1">
-                <div className="flex items-center gap-1.5">
-                  <p className="truncate text-[12px] font-bold text-white">{p.authorName}</p>
-                  {isFuture && (
-                    <span className="shrink-0 rounded bg-red-500/20 px-1.5 py-0.5 text-[9px] font-bold text-red-300">
-                      ⚠️ Future Clock
-                    </span>
-                  )}
-                </div>
-                <p className="truncate text-[11px] text-white/50">{p.caption || "(No caption)"}</p>
-                <p className="text-[10px] text-white/30">
-                  {formatTimeAgo(p.createdAt)} • {Object.keys(p.likes || {}).length} likes • ID: {p.id}
-                </p>
-              </div>
+          {postsLoading && posts.length === 0 ? (
+            <div className="flex items-center justify-center gap-2 py-12 text-[12px] text-white/60">
+              <LoaderCircle size={16} className="animate-spin text-brand-orange" />
+              পোস্ট লোড হচ্ছে...
+            </div>
+          ) : filteredPosts.length === 0 ? (
+            <div className="rounded-xl bg-white/5 px-4 py-8 text-center">
+              <p className="text-[12px] text-white/60">
+                লোড করা {posts.length}টি পোস্টের মধ্যে কিছু পাওয়া যায়নি।
+              </p>
+              {totalPostsCount !== null && fetchLimit < totalPostsCount && (
+                <button
+                  type="button"
+                  onClick={() => setFetchLimit((prev) => prev + 200)}
+                  className="mt-3 rounded-lg bg-brand-orange px-3.5 py-1.5 text-[11px] font-bold text-white"
+                >
+                  আরো পুরোনো পোস্ট থেকে খুঁজুন (+200)
+                </button>
+              )}
+            </div>
+          ) : (
+            <ul className="space-y-2">
+              {filteredPosts.slice(0, visibleLimit).map((p) => {
+                const isFuture = Number(p.createdAt) > Date.now() + 300000;
+                const likesCount = Object.keys(p.likes || {}).length;
+                const commentsCount = Object.keys(p.comments || {}).length;
+                return (
+                  <li key={p.id} className="rounded-xl bg-white/5 p-2.5">
+                    <div className="flex items-start gap-2.5">
+                      <button
+                        type="button"
+                        onClick={() => p.imageUrl && setPreviewImage(p.imageUrl)}
+                        className="shrink-0 overflow-hidden rounded-lg bg-black/40"
+                      >
+                        <img
+                          src={p.imageUrl}
+                          alt=""
+                          className="h-16 w-16 object-cover"
+                        />
+                      </button>
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center gap-1.5">
+                          <img
+                            src={p.authorPhoto}
+                            alt=""
+                            className="h-5 w-5 shrink-0 rounded-full object-cover"
+                          />
+                          <p className="truncate text-[12.5px] font-bold text-white">
+                            {p.authorName}
+                          </p>
+                          {isFuture && (
+                            <span className="shrink-0 rounded bg-red-500/20 px-1.5 py-0.5 text-[9px] font-bold text-red-300">
+                              ⚠️ Future
+                            </span>
+                          )}
+                        </div>
+                        <div className="mt-0.5 flex flex-wrap items-center gap-1.5 text-[10px] text-white/55">
+                          {p.authorId && (
+                            <button
+                              type="button"
+                              onClick={() => setSearch(p.authorId)}
+                              className="rounded bg-white/10 px-1.5 py-0.5 font-mono text-[9.5px] text-sky-300 hover:bg-white/20"
+                              title="এই ইউজারের সব পোস্ট দেখুন"
+                            >
+                              UID: {p.authorId}
+                            </button>
+                          )}
+                          <span>{formatTimeAgo(p.createdAt)}</span>
+                          <span>• ❤️ {likesCount}</span>
+                          <span>• 💬 {commentsCount}</span>
+                        </div>
+                        <p className="mt-1 line-clamp-2 text-[11px] text-white/75">
+                          {p.caption || "(No caption)"}
+                        </p>
+                        <p className="mt-0.5 truncate font-mono text-[9px] text-white/30">
+                          Post: {p.id}
+                        </p>
+                      </div>
+                      <div className="shrink-0">
+                        {confirmDeleteKey === p.id ? (
+                          <div className="flex flex-col gap-1">
+                            <button
+                              type="button"
+                              disabled={deletingKey === p.id}
+                              onClick={() => handleDeletePost(p)}
+                              className="rounded-lg bg-red-600 px-2.5 py-1 text-[10px] font-bold text-white hover:bg-red-700"
+                            >
+                              {deletingKey === p.id ? "..." : "Confirm"}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setConfirmDeleteKey(null)}
+                              className="rounded-lg bg-white/10 px-2.5 py-1 text-[10px] font-semibold text-white/70"
+                            >
+                              Cancel
+                            </button>
+                          </div>
+                        ) : (
+                          <button
+                            type="button"
+                            aria-label="Delete post"
+                            onClick={() => setConfirmDeleteKey(p.id)}
+                            className="rounded-lg bg-red-500/20 p-2 text-red-400 hover:bg-red-500/30"
+                          >
+                            <Trash size={14} />
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+
+          {visibleLimit < filteredPosts.length ? (
+            <button
+              type="button"
+              onClick={() => setVisibleLimit((prev) => prev + 60)}
+              className="w-full rounded-xl bg-white/10 py-2.5 text-[12px] font-bold text-white hover:bg-white/15"
+            >
+              আরো পোস্ট দেখুন ({filteredPosts.length - visibleLimit} টি লোডেড বাকি)
+            </button>
+          ) : (
+            (totalPostsCount === null || fetchLimit < totalPostsCount) && (
               <button
                 type="button"
-                aria-label="Delete post"
-                onClick={() => handleDeletePost(p)}
-                className="rounded-lg bg-red-500/20 p-2 text-red-400 hover:bg-red-500/30"
+                onClick={() => {
+                  setFetchLimit((prev) => prev + 120);
+                  setVisibleLimit((prev) => prev + 120);
+                }}
+                className="w-full rounded-xl bg-white/10 py-2.5 text-[12px] font-bold text-white hover:bg-white/15"
               >
-                <Trash size={14} />
+                Firebase থেকে আরো পুরোনো পোস্ট লোড করুন (+120)
               </button>
-            </li>
-          );
-        })}
-      </ul>
+            )
+          )}
+        </>
+      ) : (
+        <>
+          <div className="flex items-center justify-between text-[11px] text-white/50">
+            <p>মোট স্টোরি {filteredStories.length}টি</p>
+            <p>দেখানো হচ্ছে {Math.min(visibleLimit, filteredStories.length)}টি</p>
+          </div>
 
-      {visibleLimit < filtered.length && (
-        <button
-          type="button"
-          onClick={() => setVisibleLimit((prev) => prev + 50)}
-          className="w-full rounded-xl bg-white/10 py-2.5 text-[12px] font-bold text-white hover:bg-white/15"
+          {storiesLoading && stories.length === 0 ? (
+            <div className="flex items-center justify-center gap-2 py-12 text-[12px] text-white/60">
+              <LoaderCircle size={16} className="animate-spin text-brand-orange" />
+              স্টোরি লোড হচ্ছে...
+            </div>
+          ) : filteredStories.length === 0 ? (
+            <p className="py-10 text-center text-[12px] text-white/50">কোনো স্টোরি নেই।</p>
+          ) : (
+            <ul className="space-y-2">
+              {filteredStories.slice(0, visibleLimit).map((s) => (
+                <li key={s.id} className="flex items-center gap-2.5 rounded-xl bg-white/5 p-2.5">
+                  <button
+                    type="button"
+                    onClick={() => s.imageUrl && setPreviewImage(s.imageUrl)}
+                    className="shrink-0 overflow-hidden rounded-lg bg-black/40"
+                  >
+                    <img src={s.imageUrl} alt="" className="h-14 w-14 object-cover" />
+                  </button>
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-1.5">
+                      <img
+                        src={s.authorPhoto}
+                        alt=""
+                        className="h-5 w-5 shrink-0 rounded-full object-cover"
+                      />
+                      <p className="truncate text-[12.5px] font-bold text-white">
+                        {s.authorName}
+                      </p>
+                    </div>
+                    <p className="mt-0.5 text-[10px] text-white/50">
+                      UID: {s.authorId || "N/A"} • {formatTimeAgo(s.createdAt)}
+                    </p>
+                    <p className="truncate font-mono text-[9px] text-white/30">
+                      Story: {s.id}
+                    </p>
+                  </div>
+                  {confirmDeleteKey === s.id ? (
+                    <div className="flex flex-col gap-1">
+                      <button
+                        type="button"
+                        disabled={deletingKey === s.id}
+                        onClick={() => handleDeleteStory(s)}
+                        className="rounded-lg bg-red-600 px-2.5 py-1 text-[10px] font-bold text-white"
+                      >
+                        {deletingKey === s.id ? "..." : "Confirm"}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setConfirmDeleteKey(null)}
+                        className="rounded-lg bg-white/10 px-2.5 py-1 text-[10px] text-white/70"
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  ) : (
+                    <button
+                      type="button"
+                      aria-label="Delete story"
+                      onClick={() => setConfirmDeleteKey(s.id)}
+                      className="rounded-lg bg-red-500/20 p-2 text-red-400 hover:bg-red-500/30"
+                    >
+                      <Trash size={14} />
+                    </button>
+                  )}
+                </li>
+              ))}
+            </ul>
+          )}
+
+          {stories.length >= storyLimit && (
+            <button
+              type="button"
+              onClick={() => setStoryLimit((prev) => prev + 150)}
+              className="w-full rounded-xl bg-white/10 py-2.5 text-[12px] font-bold text-white hover:bg-white/15"
+            >
+              আরো স্টোরি লোড করুন (+150)
+            </button>
+          )}
+        </>
+      )}
+
+      {previewImage && (
+        <div
+          onClick={() => setPreviewImage(null)}
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 p-4"
         >
-          আরো পোস্ট দেখুন ({filtered.length - visibleLimit} টি বাকি)
-        </button>
+          <button
+            type="button"
+            onClick={() => setPreviewImage(null)}
+            aria-label="Close preview"
+            className="absolute right-4 top-4 flex h-9 w-9 items-center justify-center rounded-full bg-white/15 text-white"
+          >
+            <X size={18} />
+          </button>
+          <img
+            src={previewImage}
+            alt="Preview"
+            className="max-h-[85vh] max-w-full rounded-xl object-contain"
+          />
+        </div>
       )}
     </div>
   );
